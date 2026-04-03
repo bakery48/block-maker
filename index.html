@@ -247,6 +247,16 @@
 
   <div class="tb-sep"></div>
 
+  <!-- 等間隔配置 -->
+  <button class="tb-btn" id="btn-dist-h" title="左右均等配置">
+    <span class="icon">⇔</span><span class="label">左右均等</span>
+  </button>
+  <button class="tb-btn" id="btn-dist-v" title="上下均等配置">
+    <span class="icon">⇕</span><span class="label">上下均等</span>
+  </button>
+
+  <div class="tb-sep"></div>
+
   <!-- ファイル -->
   <button class="tb-btn" id="btn-save" title="保存 (Ctrl+S)">
     <span class="icon">💾</span><span class="label">保存</span>
@@ -1164,6 +1174,40 @@ function setBlockTextVAlign(vAlign) {
 document.getElementById('btn-align-top').addEventListener('click', () => setBlockTextVAlign('top'));
 document.getElementById('btn-align-mid').addEventListener('click', () => setBlockTextVAlign('middle'));
 document.getElementById('btn-align-bot').addEventListener('click', () => setBlockTextVAlign('bottom'));
+
+// --- 等間隔配置 ---
+function distributeH() {
+  const blocks = getSelections().filter(s => s.type === 'block').map(s => state.blocks.get(s.id)).filter(Boolean);
+  if (blocks.length < 3) { showStatus('左右均等配置には3つ以上のブロックを選択してください'); return; }
+  blocks.sort((a, b) => a.x - b.x);
+  const leftEdge  = blocks[0].x;
+  const rightEdge = blocks.at(-1).x + blocks.at(-1).w;
+  const totalW    = blocks.reduce((s, b) => s + b.w, 0);
+  const gap       = (rightEdge - leftEdge - totalW) / (blocks.length - 1);
+  pushHistory();
+  let curX = leftEdge;
+  for (const b of blocks) { b.x = curX; curX += b.w + gap; }
+  render();
+  showStatus('⇔ 左右均等に配置しました');
+}
+
+function distributeV() {
+  const blocks = getSelections().filter(s => s.type === 'block').map(s => state.blocks.get(s.id)).filter(Boolean);
+  if (blocks.length < 3) { showStatus('上下均等配置には3つ以上のブロックを選択してください'); return; }
+  blocks.sort((a, b) => a.y - b.y);
+  const topEdge    = blocks[0].y;
+  const bottomEdge = blocks.at(-1).y + blocks.at(-1).h;
+  const totalH     = blocks.reduce((s, b) => s + b.h, 0);
+  const gap        = (bottomEdge - topEdge - totalH) / (blocks.length - 1);
+  pushHistory();
+  let curY = topEdge;
+  for (const b of blocks) { b.y = curY; curY += b.h + gap; }
+  render();
+  showStatus('⇕ 上下均等に配置しました');
+}
+
+document.getElementById('btn-dist-h').addEventListener('click', distributeH);
+document.getElementById('btn-dist-v').addEventListener('click', distributeV);
 
 function updateAlignButtons() {
   const sels = getSelections().filter(s => s.type === 'block');
