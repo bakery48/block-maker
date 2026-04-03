@@ -1041,24 +1041,28 @@ function renderBlockText(g, block) {
   const lines  = block.text.split('\n');
   const lh     = 18;
   const cx     = block.x + block.w / 2;
-  const totalH = lines.length * lh;
-  const PAD    = 8;
   const vAlign = block.textVAlign || 'middle';
-  const startY = vAlign === 'top'    ? block.y + PAD + lh * 0.8
-               : vAlign === 'bottom' ? block.y + block.h - PAD - totalH + lh * 0.8
-               :                       block.y + block.h / 2 - totalH / 2 + lh / 2;
+  const PAD    = 8;
+
+  // dominant-baseline:central を使うと y が光学中心になるので正確に揃えられる
+  const baseY = vAlign === 'top'
+    ? block.y + PAD + lh / 2
+    : vAlign === 'bottom'
+    ? block.y + block.h - PAD - lh * (lines.length - 0.5)
+    : block.y + block.h / 2 - lh * (lines.length - 1) / 2;
 
   const txt = mkEl('text', {
-    'font-size'  : '13',
-    'font-family': 'Segoe UI, Yu Gothic UI, sans-serif',
-    'text-anchor': 'middle',
-    fill         : '#1a202c',
-    'pointer-events': 'none',
-    'user-select'   : 'none',
+    'font-size'         : '13',
+    'font-family'       : 'Segoe UI, Yu Gothic UI, sans-serif',
+    'text-anchor'       : 'middle',
+    'dominant-baseline' : 'central',
+    fill                : '#1a202c',
+    'pointer-events'    : 'none',
+    'user-select'       : 'none',
   }, g);
 
   lines.forEach((line, i) => {
-    const ts = mkEl('tspan', { x: cx, y: startY + i * lh }, txt);
+    const ts = mkEl('tspan', { x: cx, y: baseY + i * lh }, txt);
     ts.textContent = line;
   });
 }
