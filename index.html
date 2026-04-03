@@ -242,13 +242,8 @@
 <div id="canvas-wrap">
   <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
 
-    <!-- マーカー定義 -->
-    <defs>
-      <!-- 矢印ヘッド: currentColor で参照元の color プロパティを継承 -->
-      <marker id="ah" markerWidth="10" markerHeight="7"
-              refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
-        <polygon points="0 0, 10 3.5, 0 7" fill="currentColor"/>
-      </marker>
+    <!-- マーカー定義（色別マーカーはJS側で生成） -->
+    <defs id="svg-defs">
       <!-- 背景グリッド -->
       <pattern id="grid-sm" width="20" height="20" patternUnits="userSpaceOnUse">
         <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#2d3748" stroke-width="0.5"/>
@@ -310,6 +305,49 @@ const PALETTE = [
 
 const DEFAULT_BLOCK_COLOR = '#63b3ed';
 const DEFAULT_ARROW_COLOR = '#a0aec0';
+
+// --- 矢印ヘッドマーカーを色ごとに <defs> に生成 ---
+(function buildMarkers() {
+  const defs   = document.getElementById('svg-defs');
+  const colors = [...new Set([...PALETTE, DEFAULT_ARROW_COLOR, DEFAULT_BLOCK_COLOR])];
+
+  // グリッドパターンも defs に移動（HTMLのdefs削除に伴い再生成）
+  function pat(id, w, h, inner) {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+    p.setAttribute('id', id);
+    p.setAttribute('width', w); p.setAttribute('height', h);
+    p.setAttribute('patternUnits', 'userSpaceOnUse');
+    p.innerHTML = inner;
+    defs.appendChild(p);
+  }
+  pat('grid-sm', 20, 20, '<path d="M 20 0 L 0 0 0 20" fill="none" stroke="#2d3748" stroke-width="0.5"/>');
+  pat('grid-lg', 100, 100,
+    '<rect width="100" height="100" fill="url(#grid-sm)"/>' +
+    '<path d="M 100 0 L 0 0 0 100" fill="none" stroke="#374151" stroke-width="1"/>');
+
+  colors.forEach(hex => createArrowMarker(hex, defs));
+})();
+
+/** 指定色のマーカーを defs に追加（なければ）してIDを返す */
+function createArrowMarker(hex, defs) {
+  const id = 'ah-' + hex.replace('#', '');
+  if (document.getElementById(id)) return id;
+  defs = defs || document.getElementById('svg-defs');
+  const m = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+  m.setAttribute('id',           id);
+  m.setAttribute('markerWidth',  '10');
+  m.setAttribute('markerHeight', '7');
+  m.setAttribute('refX',         '9');
+  m.setAttribute('refY',         '3.5');
+  m.setAttribute('orient',       'auto');
+  m.setAttribute('markerUnits',  'strokeWidth');
+  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  poly.setAttribute('points', '0 0, 10 3.5, 0 7');
+  poly.setAttribute('fill', hex);
+  m.appendChild(poly);
+  defs.appendChild(m);
+  return id;
+}
 
 // ============================================================
 // ユーティリティ
@@ -1126,14 +1164,14 @@ function renderArrow(arrow) {
     cursor         : 'pointer',
   }, layerArrows);
 
-  // --- 見た目の線（color プロパティをセットして矢印ヘッドに currentColor 継承） ---
+  // --- 見た目の線（色別マーカーIDで矢印ヘッドを描画） ---
+  const markerId = createArrowMarker(baseColor);
   mkEl('path', {
     d,
     stroke          : baseColor,
     'stroke-width'  : strokeW,
     fill            : 'none',
-    style           : `color:${baseColor}`,
-    'marker-end'    : 'url(#ah)',
+    'marker-end'    : `url(#${markerId})`,
     'pointer-events': 'none',
     opacity         : sel ? '1' : '0.85',
   }, layerArrows);
