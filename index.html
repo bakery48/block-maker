@@ -256,24 +256,8 @@
 
 <script>
 // ============================================================
-// ステップ1: 骨格確認用のプレースホルダー
-// （ステップ2以降で順次実装）
+// ユーティリティ
 // ============================================================
-console.log('ブロック図エディタ: 骨格ロード完了');
-
-// ツールボタンの仮クリックイベント（動作確認用）
-document.querySelectorAll('.tb-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    // ツール系ボタンのみアクティブ切替
-    const toolBtns = ['btn-select','btn-block','btn-arrow'];
-    if (toolBtns.includes(btn.id)) {
-      toolBtns.forEach(id => document.getElementById(id).classList.remove('active'));
-      btn.classList.add('active');
-    }
-  });
-});
-
-// ステータスバー表示テスト
 const statusBar = document.getElementById('status-bar');
 function showStatus(msg, ms = 2500) {
   statusBar.textContent = msg;
@@ -281,7 +265,146 @@ function showStatus(msg, ms = 2500) {
   clearTimeout(showStatus._t);
   showStatus._t = setTimeout(() => statusBar.classList.remove('show'), ms);
 }
-showStatus('ステップ1完了: 骨格OK ✔');
+
+// ============================================================
+// ステップ2: データモデル
+// ============================================================
+
+/**
+ * Block（ブロック）
+ * {
+ *   id     : number          — 一意ID
+ *   x, y   : number          — 左上座標
+ *   w, h   : number          — 幅・高さ
+ *   text   : string          — 表示テキスト（改行可）
+ * }
+ *
+ * Arrow（矢印）
+ * {
+ *   id         : number
+ *   start      : Endpoint    — 始点
+ *   end        : Endpoint    — 終点
+ *   waypoints  : {x,y}[]     — 中間折れ点（0個以上）
+ *   label      : string      — 矢印ラベル
+ * }
+ *
+ * Endpoint（接続端点）
+ * {
+ *   blockId : number|null  — 接続先ブロックID（null=フリー）
+ *   side    : 'top'|'right'|'bottom'|'left'|null
+ *   t       : number|null  — 辺上の位置 0..1
+ *   x, y    : number       — キャッシュ座標（フリー時はそのまま使用）
+ * }
+ */
+
+// --- アプリ状態 ---
+const state = {
+  // データ
+  blocks   : new Map(),   // id -> Block
+  arrows   : new Map(),   // id -> Arrow
+  nextId   : 1,
+
+  // ツール: 'select' | 'block' | 'arrow'
+  tool     : 'select',
+
+  // 選択: { type: 'block'|'arrow', id } | null
+  selection: null,
+
+  // ドラッグ中の情報（種類によって構造が変わる）
+  drag     : null,
+
+  // 矢印描画中の情報
+  drawing  : null,
+  /*
+   * drawing = {
+   *   points     : {x,y}[]       — クリックで確定した点（先頭=始点）
+   *   startSnap  : Endpoint|null — 始点のスナップ情報
+   *   curMouse   : {x,y}         — 現在のマウス位置
+   *   snapTarget : SnapTarget|null — 現在スナップ中のターゲット
+   *   lastClick  : number        — 最後のクリック時刻（ms）
+   * }
+   */
+};
+
+// --- ヘルパー ---
+function nextId() { return state.nextId++; }
+
+/** Block を新規作成してstateに追加 */
+function createBlock(x, y, w, h, text = 'コンポーネント') {
+  const id = nextId();
+  state.blocks.set(id, { id, x, y, w, h, text });
+  return id;
+}
+
+/** Arrow を新規作成してstateに追加 */
+function createArrow(start, end, waypoints = [], label = '') {
+  const id = nextId();
+  state.arrows.set(id, { id, start, end, waypoints, label });
+  return id;
+}
+
+/** Endpoint を生成（ブロック接続あり） */
+function makeSnapEndpoint(blockId, side, t, x, y) {
+  return { blockId, side, t, x, y };
+}
+
+/** Endpoint を生成（フリー） */
+function makeFreeEndpoint(x, y) {
+  return { blockId: null, side: null, t: null, x, y };
+}
+
+/** 選択をセット */
+function setSelection(type, id) {
+  state.selection = { type, id };
+}
+
+/** 選択を解除 */
+function clearSelection() {
+  state.selection = null;
+}
+
+/** 選択中の要素を削除 */
+function deleteSelected() {
+  if (!state.selection) return;
+  const { type, id } = state.selection;
+  if (type === 'block') {
+    state.blocks.delete(id);
+    // 接続している矢印も削除
+    for (const [aid, arrow] of state.arrows) {
+      if (arrow.start.blockId === id || arrow.end.blockId === id) {
+        state.arrows.delete(aid);
+      }
+    }
+  } else if (type === 'arrow') {
+    state.arrows.delete(id);
+  }
+  clearSelection();
+}
+
+// --- シリアライズ / デシリアライズ ---
+function serialize() {
+  return JSON.stringify({
+    version : 1,
+    nextId  : state.nextId,
+    blocks  : [...state.blocks.values()],
+    arrows  : [...state.arrows.values()],
+  }, null, 2);
+}
+
+function deserialize(json) {
+  const data = JSON.parse(json);
+  state.blocks.clear();
+  state.arrows.clear();
+  (data.blocks || []).forEach(b => state.blocks.set(b.id, b));
+  (data.arrows || []).forEach(a => state.arrows.set(a.id, a));
+  state.nextId   = data.nextId ?? 1;
+  state.selection = null;
+  state.drag      = null;
+  state.drawing   = null;
+}
+
+// 動作確認
+showStatus('ステップ2完了: データモデルOK ✔');
 </script>
 </body>
 </html>
