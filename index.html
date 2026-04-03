@@ -1055,12 +1055,6 @@ function renderBlock(block) {
 
   const color = block.color || DEFAULT_BLOCK_COLOR;
 
-  // --- ドロップシャドウ ---
-  mkEl('rect', {
-    x: x + 3, y: y + 4, width: w, height: h,
-    fill: 'rgba(0,0,0,0.35)',
-  }, g);
-
   // --- 本体（角なし） ---
   const light = isLightBg();
   mkEl('rect', {
@@ -1559,15 +1553,6 @@ function renderArrow(arrow) {
     const labelW = Math.max(40, arrow.label.length * 8 + 12);
     const lx     = mid.x - labelW / 2;
     const ly     = mid.y - 22;
-
-    // 背景
-    mkEl('rect', {
-      x: lx, y: ly, width: labelW, height: 17,
-      rx: 3, ry: 3,
-      fill   : '#1e2533',
-      opacity: '0.85',
-      'pointer-events': 'none',
-    }, layerArrows);
 
     // テキスト
     const lt = mkEl('text', {
