@@ -159,6 +159,41 @@
 
     /* ===== ファイル入力（非表示） ===== */
     #file-input { display: none; }
+
+    /* ===== カラーピッカー ===== */
+    #color-picker {
+      position: fixed;
+      bottom: 46px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: #2d3748;
+      border: 1px solid #4a5568;
+      border-radius: 10px;
+      padding: 7px 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      z-index: 90;
+    }
+    #color-picker.show { display: flex; }
+    #color-picker .cp-label {
+      font-size: 11px;
+      color: #718096;
+      margin-right: 2px;
+      white-space: nowrap;
+    }
+    .cp-swatch {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.1s, border-color 0.1s;
+      flex-shrink: 0;
+    }
+    .cp-swatch:hover { transform: scale(1.2); }
+    .cp-swatch.active { border-color: #fff; transform: scale(1.15); }
   </style>
 </head>
 <body>
@@ -209,15 +244,10 @@
 
     <!-- マーカー定義 -->
     <defs>
-      <!-- 通常矢印ヘッド -->
-      <marker id="ah-normal" markerWidth="10" markerHeight="7"
+      <!-- 矢印ヘッド: currentColor で参照元の color プロパティを継承 -->
+      <marker id="ah" markerWidth="10" markerHeight="7"
               refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
-        <polygon points="0 0, 10 3.5, 0 7" fill="#a0aec0"/>
-      </marker>
-      <!-- 選択中矢印ヘッド -->
-      <marker id="ah-selected" markerWidth="10" markerHeight="7"
-              refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
-        <polygon points="0 0, 10 3.5, 0 7" fill="#4299e1"/>
+        <polygon points="0 0, 10 3.5, 0 7" fill="currentColor"/>
       </marker>
       <!-- 背景グリッド -->
       <pattern id="grid-sm" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -251,10 +281,36 @@
 <!-- インラインテキストエディタ -->
 <textarea id="text-editor" rows="1" spellcheck="false"></textarea>
 
+<!-- カラーピッカー（選択時に表示） -->
+<div id="color-picker">
+  <span class="cp-label">カラー:</span>
+</div>
+
 <!-- ステータスバー -->
 <div id="status-bar"></div>
 
 <script>
+// ============================================================
+// カラーパレット（12色）
+// ============================================================
+const PALETTE = [
+  '#63b3ed',  // ブルー（デフォルト）
+  '#4fd1c5',  // ティール
+  '#68d391',  // グリーン
+  '#f6e05e',  // イエロー
+  '#f6ad55',  // オレンジ
+  '#fc8181',  // レッド
+  '#f687b3',  // ピンク
+  '#b794f4',  // パープル
+  '#76e4f7',  // シアン
+  '#fbb6ce',  // ローズ
+  '#a0aec0',  // グレー
+  '#e2e8f0',  // ホワイト
+];
+
+const DEFAULT_BLOCK_COLOR = '#63b3ed';
+const DEFAULT_ARROW_COLOR = '#a0aec0';
+
 // ============================================================
 // ユーティリティ
 // ============================================================
@@ -330,16 +386,16 @@ const state = {
 function nextId() { return state.nextId++; }
 
 /** Block を新規作成してstateに追加 */
-function createBlock(x, y, w, h, text = 'コンポーネント') {
+function createBlock(x, y, w, h, text = 'コンポーネント', color = DEFAULT_BLOCK_COLOR) {
   const id = nextId();
-  state.blocks.set(id, { id, x, y, w, h, text });
+  state.blocks.set(id, { id, x, y, w, h, text, color });
   return id;
 }
 
 /** Arrow を新規作成してstateに追加 */
-function createArrow(start, end, waypoints = [], label = '') {
+function createArrow(start, end, waypoints = [], label = '', color = DEFAULT_ARROW_COLOR) {
   const id = nextId();
-  state.arrows.set(id, { id, start, end, waypoints, label });
+  state.arrows.set(id, { id, start, end, waypoints, label, color });
   return id;
 }
 
@@ -686,24 +742,20 @@ function renderBlock(block) {
 
   const g = mkEl('g', { 'data-bid': block.id }, layerBlocks);
 
+  const color = block.color || DEFAULT_BLOCK_COLOR;
+
   // --- ドロップシャドウ ---
   mkEl('rect', {
     x: x + 3, y: y + 4, width: w, height: h,
-    rx: 7, ry: 7,
     fill: 'rgba(0,0,0,0.35)',
   }, g);
 
-  // --- 本体 ---
-  const fillColor   = sel ? '#2c5282' : '#2a3f5f';
-  const strokeColor = sel ? '#63b3ed' : '#4a6fa5';
-  const strokeW     = sel ? 2.5 : 1.5;
-
+  // --- 本体（角なし） ---
   mkEl('rect', {
     x, y, width: w, height: h,
-    rx: 7, ry: 7,
-    fill  : fillColor,
-    stroke: strokeColor,
-    'stroke-width': strokeW,
+    fill          : sel ? color + '40' : color + '22',
+    stroke        : color,
+    'stroke-width': sel ? 2.5 : 1.5,
   }, g);
 
   // --- テキスト ---
@@ -742,15 +794,7 @@ function renderAllBlocks() {
   for (const block of state.blocks.values()) renderBlock(block);
 }
 
-/** 全体を再描画するメイン関数（ステップ6以降で拡張） */
-function render() {
-  layerBlocks.innerHTML  = '';
-  layerArrows.innerHTML  = '';
-  layerOverlay.innerHTML = '';
-  for (const block of state.blocks.values()) renderBlock(block);
-  // 矢印はステップ6で追加
-  renderOverlay();
-}
+// render() は ステップ6 で完全版を定義（こちらは削除済み仮版）
 
 /** オーバーレイ（描画中プレビュー等）— ステップ6以降で拡張 */
 function renderOverlay() {
@@ -1064,9 +1108,10 @@ function renderArrow(arrow) {
   const pts = arrowPoints(arrow);
   if (pts.length < 2) return;
 
-  const color      = sel ? '#63b3ed' : '#718096';
+  const baseColor  = arrow.color || DEFAULT_ARROW_COLOR;
+  // 選択中は明るくする（白に20%寄せる）
+  const color      = sel ? baseColor : baseColor + 'cc';
   const strokeW    = sel ? 2.5 : 2;
-  const markerId   = sel ? 'ah-selected' : 'ah-normal';
 
   // --- パス文字列生成 ---
   const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
@@ -1081,14 +1126,16 @@ function renderArrow(arrow) {
     cursor         : 'pointer',
   }, layerArrows);
 
-  // --- 見た目の線 ---
+  // --- 見た目の線（color プロパティをセットして矢印ヘッドに currentColor 継承） ---
   mkEl('path', {
     d,
-    stroke         : color,
-    'stroke-width' : strokeW,
-    fill           : 'none',
-    'marker-end'   : `url(#${markerId})`,
+    stroke          : baseColor,
+    'stroke-width'  : strokeW,
+    fill            : 'none',
+    style           : `color:${baseColor}`,
+    'marker-end'    : 'url(#ah)',
     'pointer-events': 'none',
+    opacity         : sel ? '1' : '0.85',
   }, layerArrows);
 
   // --- ラベル ---
@@ -1114,7 +1161,7 @@ function renderArrow(arrow) {
       'text-anchor'  : 'middle',
       'font-size'    : '12',
       'font-family'  : 'Segoe UI, Yu Gothic UI, sans-serif',
-      fill           : sel ? '#63b3ed' : '#a0aec0',
+      fill           : baseColor,
       'pointer-events': 'none',
     }, layerArrows);
     lt.textContent = arrow.label;
@@ -1165,6 +1212,8 @@ function render() {
 
   // オーバーレイ（ハンドル・プレビュー）
   renderOverlay();
+  // カラーピッカーの表示更新
+  if (typeof updateColorPicker === 'function') updateColorPicker();
 }
 
 // ============================================================
@@ -1638,10 +1687,66 @@ document.addEventListener('keydown', e => {
 // ※ function宣言の重複ラップはホイスティングで無限再帰になるため使用しない
 
 // ============================================================
+// カラーピッカー
+// ============================================================
+const colorPicker = document.getElementById('color-picker');
+
+// 12色スウォッチを生成
+PALETTE.forEach(hex => {
+  const sw = document.createElement('div');
+  sw.className    = 'cp-swatch';
+  sw.style.background = hex;
+  sw.title        = hex;
+  sw.dataset.color = hex;
+  colorPicker.appendChild(sw);
+});
+
+/** 選択中要素の現在色を返す */
+function getSelectedColor() {
+  if (!state.selection) return null;
+  if (state.selection.type === 'block') {
+    return (state.blocks.get(state.selection.id) ?? {}).color ?? DEFAULT_BLOCK_COLOR;
+  } else {
+    return (state.arrows.get(state.selection.id) ?? {}).color ?? DEFAULT_ARROW_COLOR;
+  }
+}
+
+/** カラーピッカーを表示してアクティブ色を反映 */
+function updateColorPicker() {
+  if (!state.selection) {
+    colorPicker.classList.remove('show');
+    return;
+  }
+  colorPicker.classList.add('show');
+  const cur = getSelectedColor();
+  colorPicker.querySelectorAll('.cp-swatch').forEach(sw => {
+    sw.classList.toggle('active', sw.dataset.color === cur);
+  });
+}
+
+// スウォッチクリック → 色を適用
+colorPicker.addEventListener('click', e => {
+  const sw = e.target.closest('.cp-swatch');
+  if (!sw || !state.selection) return;
+
+  const hex = sw.dataset.color;
+  pushHistory();
+
+  if (state.selection.type === 'block') {
+    const b = state.blocks.get(state.selection.id);
+    if (b) b.color = hex;
+  } else {
+    const a = state.arrows.get(state.selection.id);
+    if (a) a.color = hex;
+  }
+  render();
+  updateColorPicker();
+});
+
+// ============================================================
 // ウィンドウリサイズ対応
 // ============================================================
 window.addEventListener('resize', () => {
-  // テキストエディタが開いていたら閉じる
   if (_editing) closeEditor(true);
 });
 
