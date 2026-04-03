@@ -217,6 +217,16 @@
 
   <div class="tb-sep"></div>
 
+  <!-- グループ -->
+  <button class="tb-btn" id="btn-group"   title="グループ化 (Ctrl+G)">
+    <span class="icon">⊞</span><span class="label">グループ</span>
+  </button>
+  <button class="tb-btn" id="btn-ungroup" title="グループ解除 (Ctrl+Shift+G)">
+    <span class="icon">⊟</span><span class="label">解除</span>
+  </button>
+
+  <div class="tb-sep"></div>
+
   <!-- 編集 -->
   <button class="tb-btn danger" id="btn-delete" title="削除 (Del)">
     <span class="icon">✕</span><span class="label">削除</span>
@@ -258,7 +268,8 @@
     <rect id="bg" width="100%" height="100%" fill="#1e2533"/>
     <rect id="bg-grid" width="100%" height="100%" fill="url(#grid-lg)"/>
 
-    <!-- 描画レイヤー（順番重要：矢印→ブロック→オーバーレイ） -->
+    <!-- 描画レイヤー（順番重要：グループ枠→矢印→ブロック→オーバーレイ） -->
+    <g id="layer-groups"></g>
     <g id="layer-arrows"></g>
     <g id="layer-blocks"></g>
     <g id="layer-overlay"></g>
@@ -409,6 +420,9 @@ const state = {
 
   // 矢印描画中の情報
   drawing  : null,
+
+  // グループ: groupId -> Set<selKey>
+  groups   : new Map(),
   /*
    * drawing = {
    *   points     : {x,y}[]       — クリックで確定した点（先頭=始点）
@@ -468,20 +482,108 @@ function toggleSelection(type, id) {
 /** 選択を全解除 */
 function clearSelection() { state.selections.clear(); }
 
+// --- グループヘルパー ---
+
+/** 要素が属するグループIDを返す（なければ null） */
+function getGroupOf(type, id) {
+  const k = selKey(type, id);
+  for (const [gid, members] of state.groups) {
+    if (members.has(k)) return gid;
+  }
+  return null;
+}
+
+/** グループの全メンバーを選択状態にする */
+function selectGroup(groupId) {
+  state.selections.clear();
+  const members = state.groups.get(groupId);
+  if (!members) return;
+  for (const k of members) {
+    const [type, idStr] = k.split('-');
+    const id = Number(idStr);
+    const exists = type === 'block' ? state.blocks.has(id) : state.arrows.has(id);
+    if (exists) state.selections.set(k, { type, id });
+  }
+}
+
+/** グループのブロック部材を包むバウンディングボックスを返す */
+function groupBoundingBox(groupId) {
+  const members = state.groups.get(groupId);
+  if (!members) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const k of members) {
+    const [type, idStr] = k.split('-');
+    if (type !== 'block') continue;
+    const b = state.blocks.get(Number(idStr));
+    if (!b) continue;
+    minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h);
+  }
+  if (minX === Infinity) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** 選択中要素をグループ化する */
+function groupSelected() {
+  if (state.selections.size < 2) {
+    showStatus('グループ化には2つ以上の要素を選択してください');
+    return;
+  }
+  pushHistory();
+  const gid = nextId();
+  const members = new Set();
+  for (const { type, id } of getSelections()) {
+    // 既存グループから除去
+    const oldGid = getGroupOf(type, id);
+    if (oldGid !== null) {
+      const oldMembers = state.groups.get(oldGid);
+      oldMembers.delete(selKey(type, id));
+      if (oldMembers.size <= 1) state.groups.delete(oldGid);
+    }
+    members.add(selKey(type, id));
+  }
+  state.groups.set(gid, members);
+  render();
+  showStatus(`⊞ グループ化しました (${members.size}個)`);
+}
+
+/** 選択中グループを解除する */
+function ungroupSelected() {
+  const groupIds = new Set();
+  for (const { type, id } of getSelections()) {
+    const gid = getGroupOf(type, id);
+    if (gid !== null) groupIds.add(gid);
+  }
+  if (groupIds.size === 0) { showStatus('選択中にグループがありません'); return; }
+  pushHistory();
+  for (const gid of groupIds) state.groups.delete(gid);
+  render();
+  showStatus('⊟ グループ解除しました');
+}
+
 /** 選択中の要素をすべて削除（ブロックに接続した矢印も一括削除） */
 function deleteSelected() {
   if (state.selections.size === 0) return;
   pushHistory();
+  const deletedKeys = new Set();
   for (const { type, id } of getSelections()) {
+    deletedKeys.add(selKey(type, id));
     if (type === 'block') {
       state.blocks.delete(id);
       for (const [aid, arrow] of state.arrows) {
-        if (arrow.start.blockId === id || arrow.end.blockId === id)
+        if (arrow.start.blockId === id || arrow.end.blockId === id) {
+          deletedKeys.add(selKey('arrow', aid));
           state.arrows.delete(aid);
+        }
       }
     } else if (type === 'arrow') {
       state.arrows.delete(id);
     }
+  }
+  // 削除要素をグループから除去、メンバーが1個以下になったグループは解散
+  for (const [gid, members] of state.groups) {
+    for (const k of deletedKeys) members.delete(k);
+    if (members.size <= 1) state.groups.delete(gid);
   }
   clearSelection();
 }
@@ -499,6 +601,7 @@ function serialize() {
     nextId  : state.nextId,
     blocks  : [...state.blocks.values()],
     arrows  : [...state.arrows.values()],
+    groups  : [...state.groups.entries()].map(([gid, members]) => ({ gid, members: [...members] })),
   }, null, 2);
 }
 
@@ -506,8 +609,10 @@ function deserialize(json) {
   const data = JSON.parse(json);
   state.blocks.clear();
   state.arrows.clear();
+  state.groups.clear();
   (data.blocks || []).forEach(b => state.blocks.set(b.id, b));
   (data.arrows || []).forEach(a => state.arrows.set(a.id, a));
+  (data.groups || []).forEach(({ gid, members }) => state.groups.set(gid, new Set(members)));
   state.nextId     = data.nextId ?? 1;
   state.selections.clear();
   state.drag       = null;
@@ -823,6 +928,7 @@ function svgPoint(e) {
 // ステップ4: ブロック描画
 // ============================================================
 
+const layerGroups  = document.getElementById('layer-groups');
 const layerBlocks  = document.getElementById('layer-blocks');
 const layerArrows  = document.getElementById('layer-arrows');
 const layerOverlay = document.getElementById('layer-overlay');
@@ -943,7 +1049,9 @@ function setTool(name) {
 document.getElementById('btn-select').addEventListener('click', () => setTool('select'));
 document.getElementById('btn-block' ).addEventListener('click', () => setTool('block'));
 document.getElementById('btn-arrow' ).addEventListener('click', () => setTool('arrow'));
-document.getElementById('btn-delete').addEventListener('click', () => { deleteSelected(); render(); });
+document.getElementById('btn-delete') .addEventListener('click', () => { deleteSelected(); render(); });
+document.getElementById('btn-group')  .addEventListener('click', groupSelected);
+document.getElementById('btn-ungroup').addEventListener('click', ungroupSelected);
 
 // --- マウス状態 ---
 let isDown    = false;
@@ -1045,8 +1153,13 @@ function onSelectDown(x, y, ctrlKey) {
       render();
       return;
     }
-    // 既に選択中ならそのまま移動開始（選択解除しない）
-    if (!isSelected(hit.type, hit.id)) setSelection(hit.type, hit.id);
+    // グループ要素なら全メンバーを選択
+    const groupId = getGroupOf(hit.type, hit.id);
+    if (groupId !== null && !isSelected(hit.type, hit.id)) {
+      selectGroup(groupId);
+    } else if (!isSelected(hit.type, hit.id)) {
+      setSelection(hit.type, hit.id);
+    }
 
     if (hit.type === 'block') {
       // 選択されているブロック全部の元座標を記録
@@ -1216,6 +1329,12 @@ document.addEventListener('keydown', e => {
     case 'v': case 'V': setTool('select'); break;
     case 'b': case 'B': setTool('block');  break;
     case 'a': case 'A': setTool('arrow');  break;
+    case 'g': case 'G':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.shiftKey ? ungroupSelected() : groupSelected();
+      }
+      break;
     case 'Delete': case 'Backspace':
       e.preventDefault();
       deleteSelected(); render();
@@ -1386,11 +1505,35 @@ function renderArrow(arrow) {
   }
 }
 
+/** グループの外枠（破線矩形）を layer-groups に描画 */
+function renderGroups() {
+  layerGroups.innerHTML = '';
+  const PAD = 12;
+  for (const [gid, members] of state.groups) {
+    const bb = groupBoundingBox(gid);
+    if (!bb) continue;
+    mkEl('rect', {
+      x: bb.x - PAD, y: bb.y - PAD,
+      width: bb.w + PAD * 2, height: bb.h + PAD * 2,
+      fill: 'none',
+      stroke: '#4299e1',
+      'stroke-width': 1.5,
+      'stroke-dasharray': '8 4',
+      opacity: '0.45',
+      rx: 5,
+      'pointer-events': 'none',
+    }, layerGroups);
+  }
+}
+
 /** render() に矢印描画を組み込む（ステップ4のrenderを上書き） */
 function render() {
   layerBlocks.innerHTML  = '';
   layerArrows.innerHTML  = '';
   layerOverlay.innerHTML = '';
+
+  // グループ外枠
+  renderGroups();
 
   // 矢印（ブロックの下に描画）
   for (const arrow of state.arrows.values()) renderArrow(arrow);
@@ -1818,6 +1961,7 @@ document.getElementById('btn-clear').addEventListener('click', () => {
   if (!confirm('すべてクリアしますか？')) return;
   state.blocks.clear();
   state.arrows.clear();
+  state.groups.clear();
   state.nextId    = 1;
   state.selections.clear();
   state.drag      = null;
