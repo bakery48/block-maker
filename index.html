@@ -1132,29 +1132,211 @@ function render() {
 }
 
 // ============================================================
-// 初期サンプル描画（矢印付き）
+// ステップ7: 矢印の接続スナップ（PowerPoint方式）
+// ============================================================
+
+// --- mousemove: 矢印ツール中のスナップ更新 ---
+svgEl.addEventListener('mousemove', e => {
+  const { x, y } = svgPoint(e);
+
+  if (state.tool === 'arrow') {
+    if (state.drawing) {
+      // 始点ブロックは除外してスナップ検索
+      const excl = state.drawing.startSnap?.blockId ?? null;
+      state.drawing.snap    = findSnap(x, y, excl);
+      state.drawing.curMouse = { x, y };
+      render();
+    } else {
+      // 未開始: ホバー中のスナップ候補だけ表示
+      state._hoverSnap = findSnap(x, y);
+      render();
+    }
+  } else {
+    state._hoverSnap = null;
+  }
+}, true); // capture: mousemoveが先に来るよう capture フェーズで登録
+
+// --- click: 矢印ツールのシングルクリック処理 ---
+// (dblclick と競合するため時間差で確定)
+let _arrowClickTimer = null;
+
+svgEl.addEventListener('click', e => {
+  if (state.tool !== 'arrow') return;
+  e.stopPropagation();
+
+  const { x, y } = svgPoint(e);
+
+  if (!state.drawing) {
+    // ===== 矢印描画開始 =====
+    const snap = findSnap(x, y);
+    const startPt = snap ? { x: snap.x, y: snap.y } : { x, y };
+    state.drawing = {
+      points    : [startPt],          // 確定済み点列（始点含む）
+      startSnap : snap                // 始点スナップ情報
+        ? makeSnapEndpoint(snap.blockId, snap.side, snap.t, snap.x, snap.y)
+        : null,
+      curMouse  : startPt,
+      snap      : null,
+    };
+    state._hoverSnap = null;
+    render();
+    showStatus('クリックで折れ点追加 / ブロック辺でクリックで接続 / ダブルクリックで終了');
+    return;
+  }
+
+  // ===== 矢印描画中 =====
+  // ダブルクリック(dblclick)と競合するため 220ms 遅延確定
+  const snapNow = state.drawing.snap;
+  const ptNow   = snapNow ? { x: snapNow.x, y: snapNow.y } : { x, y };
+
+  clearTimeout(_arrowClickTimer);
+  _arrowClickTimer = setTimeout(() => {
+    _arrowClickTimer = null;
+    if (!state.drawing) return;
+
+    if (snapNow) {
+      // ブロック辺にスナップ → 矢印を完成させる
+      finishArrow(snapNow);
+    } else {
+      // 空白クリック → 折れ点を追加
+      state.drawing.points.push(ptNow);
+      render();
+    }
+  }, 220);
+});
+
+// --- dblclick: 空白でダブルクリック → その場で終了（フリー終点） ---
+svgEl.addEventListener('dblclick', e => {
+  if (state.tool !== 'arrow' || !state.drawing) return;
+  e.stopPropagation();
+
+  clearTimeout(_arrowClickTimer);
+  _arrowClickTimer = null;
+
+  const { x, y } = svgPoint(e);
+  const snap = state.drawing.snap;
+
+  if (snap) {
+    finishArrow(snap);
+  } else {
+    // フリー終点で確定
+    finishArrow(null, { x, y });
+  }
+});
+
+/** 矢印を確定して state.arrows に追加する */
+function finishArrow(endSnap, freePt = null) {
+  const d = state.drawing;
+  state.drawing = null;
+
+  // 始点
+  const start = d.startSnap ?? makeFreeEndpoint(d.points[0].x, d.points[0].y);
+
+  // 終点
+  const end = endSnap
+    ? makeSnapEndpoint(endSnap.blockId, endSnap.side, endSnap.t, endSnap.x, endSnap.y)
+    : makeFreeEndpoint(freePt.x, freePt.y);
+
+  // 中間折れ点（始点の次から）
+  const waypoints = d.points.slice(1);
+
+  const id = createArrow(start, end, waypoints, '');
+  setSelection('arrow', id);
+  setTool('select');
+  render();
+  showStatus('矢印を作成しました。ダブルクリックでラベル編集');
+}
+
+// ============================================================
+// renderOverlay 拡張: スナップ表示 + 矢印プレビュー
+// ============================================================
+function renderOverlay() {
+  // --- ブロック作成プレビュー ---
+  const d = state.drag;
+  if (d?.type === 'create') {
+    const bx = Math.min(d.sx, d.cx);
+    const by = Math.min(d.sy, d.cy);
+    const bw = Math.max(MIN_W, Math.abs(d.cx - d.sx));
+    const bh = Math.max(MIN_H, Math.abs(d.cy - d.sy));
+    mkEl('rect', {
+      x: bx, y: by, width: bw, height: bh,
+      rx: 7, ry: 7,
+      fill: 'rgba(66,153,225,0.1)', stroke: '#4299e1',
+      'stroke-width': 2, 'stroke-dasharray': '6 3',
+      'pointer-events': 'none',
+    }, layerOverlay);
+  }
+
+  // --- 矢印ツール: ホバースナップ表示（未開始） ---
+  const hs = state._hoverSnap;
+  if (state.tool === 'arrow' && !state.drawing && hs) {
+    renderSnapIndicator(hs.x, hs.y);
+  }
+
+  // --- 矢印描画中プレビュー ---
+  if (state.drawing) {
+    const dr  = state.drawing;
+    const cur = dr.snap ? { x: dr.snap.x, y: dr.snap.y } : dr.curMouse;
+    const pts = [...dr.points, cur];
+
+    // 破線プレビュー
+    const dStr = pts.map((p, i) =>
+      `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
+    ).join(' ');
+    mkEl('path', {
+      d: dStr,
+      stroke: '#4299e1', 'stroke-width': 2,
+      'stroke-dasharray': '7 4',
+      fill: 'none', 'pointer-events': 'none',
+    }, layerOverlay);
+
+    // 始点マーカー
+    const sp = dr.points[0];
+    mkEl('circle', { cx: sp.x, cy: sp.y, r: 5,
+      fill: '#4299e1', 'pointer-events': 'none' }, layerOverlay);
+
+    // 確定済み中間折れ点
+    dr.points.slice(1).forEach(p => {
+      mkEl('circle', { cx: p.x, cy: p.y, r: 4,
+        fill: '#2d3748', stroke: '#4299e1', 'stroke-width': 1.5,
+        'pointer-events': 'none' }, layerOverlay);
+    });
+
+    // スナップ先インジケータ
+    if (dr.snap) renderSnapIndicator(dr.snap.x, dr.snap.y);
+  }
+}
+
+/** スナップ点に青いリングを描画 */
+function renderSnapIndicator(x, y) {
+  mkEl('circle', { cx: x, cy: y, r: 9,
+    fill: 'none', stroke: '#4299e1', 'stroke-width': 2,
+    opacity: '0.9', 'pointer-events': 'none' }, layerOverlay);
+  mkEl('circle', { cx: x, cy: y, r: 3,
+    fill: '#4299e1', 'pointer-events': 'none' }, layerOverlay);
+}
+
+// ============================================================
+// 初期サンプル描画
 // ============================================================
 (function initSample() {
   const b1 = createBlock(100, 130, 160, 60, 'フロントエンド');
   const b2 = createBlock(370, 130, 160, 60, 'バックエンド');
-  const b3 = createBlock(235, 280, 160, 60, 'データベース');
+  const b3 = createBlock(235, 290, 160, 60, 'データベース');
 
-  // ブロック間の矢印（右辺 → 左辺）
   createArrow(
-    makeSnapEndpoint(b1, 'right', 0.5, 0, 0),
-    makeSnapEndpoint(b2, 'left',  0.5, 0, 0),
-    [],
-    'API リクエスト'
+    makeSnapEndpoint(b1, 'right',  0.5, 0, 0),
+    makeSnapEndpoint(b2, 'left',   0.5, 0, 0),
+    [], 'API リクエスト'
   );
   createArrow(
     makeSnapEndpoint(b2, 'bottom', 0.5, 0, 0),
     makeSnapEndpoint(b3, 'right',  0.3, 0, 0),
-    [],
-    'SQL'
+    [], 'SQL'
   );
 
   render();
-  showStatus('ステップ6完了: 矢印描画OK ✔');
+  showStatus('ステップ7完了: スナップ接続OK ✔  A=矢印ツール → ブロック辺をクリックして接続');
 })();
 </script>
 </body>
