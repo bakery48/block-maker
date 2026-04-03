@@ -366,6 +366,7 @@ function clearSelection() {
 /** 選択中の要素を削除 */
 function deleteSelected() {
   if (!state.selection) return;
+  pushHistory();
   const { type, id } = state.selection;
   if (type === 'block') {
     state.blocks.delete(id);
@@ -803,17 +804,16 @@ svgEl.addEventListener('mousemove', e => {
   onDragMove(x, y);
 });
 
-// --- mouseup ---
-svgEl.addEventListener('mouseup', e => {
-  if (e.button !== 0) return;
-  const { x, y } = svgPoint(e);
-  onDragEnd(x, y);
+// --- mouseup: SVG外でボタンを離しても確実にドラッグ終了させる ---
+document.addEventListener('mouseup', e => {
+  if (e.button !== 0 || !isDown) return;
   isDown = false;
-});
-
-// マウスがSVG外に出た場合もドラッグ終了
-svgEl.addEventListener('mouseleave', e => {
-  if (isDown) { onDragEnd(svgPoint(e).x, svgPoint(e).y); isDown = false; }
+  const hadDrag = !!state.drag;
+  const r = svgEl.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  if (hadDrag) pushHistory();
+  onDragEnd(x, y);
 });
 
 // ============================================================
@@ -1272,6 +1272,7 @@ svgEl.addEventListener('dblclick', e => {
 
 /** 矢印を確定して state.arrows に追加する */
 function finishArrow(endSnap, freePt = null) {
+  pushHistory();
   const d = state.drawing;
   state.drawing = null;
 
@@ -1419,6 +1420,7 @@ function openEditor(type, id) {
 /** テキストエディタを閉じる（confirm=true で値を反映） */
 function closeEditor(confirm = true) {
   if (!_editing) return;
+  if (confirm) pushHistory();
   const { type, id } = _editing;
   _editing = null;
   textEditor.style.display = 'none';
@@ -1630,33 +1632,10 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// アンドゥ対象の操作に pushHistory() を差し込む
-// mouseup でドラッグ系・矢印確定系の確定時に記録
-const _rawOnDragEnd = onDragEnd;
-function onDragEnd(x, y) {
-  const hadDrag = !!state.drag;
-  if (hadDrag) pushHistory();
-  _rawOnDragEnd(x, y);
-}
-
-const _rawFinishArrow = finishArrow;
-function finishArrow(endSnap, freePt) {
-  pushHistory();
-  _rawFinishArrow(endSnap, freePt);
-}
-
-const _rawDeleteSelected = deleteSelected;
-function deleteSelected() {
-  if (state.selection) pushHistory();
-  _rawDeleteSelected();
-}
-
-// closeEditor（テキスト確定）時も記録
-const _rawCloseEditor = closeEditor;
-function closeEditor(confirm = true) {
-  if (confirm && _editing) pushHistory();
-  _rawCloseEditor(confirm);
-}
+// アンドゥ記録フラグ: 各操作の先頭で直接呼ぶ（関数再宣言による無限再帰を避ける）
+// onDragEnd → document mouseup ハンドラ側で記録
+// finishArrow / deleteSelected / closeEditor は各関数の先頭に pushHistory() を直接追記済み
+// ※ function宣言の重複ラップはホイスティングで無限再帰になるため使用しない
 
 // ============================================================
 // ウィンドウリサイズ対応
