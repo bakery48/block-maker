@@ -574,15 +574,63 @@ function resolveEndpoint(ep) {
   return { x: ep.x, y: ep.y };
 }
 
+// --- 直角ルーティング ---
+
+/**
+ * 始点・終点とその辺情報から直角折れ線の中間ウェイポイントを自動計算する
+ * 戻り値: [{x,y}] の配列（0〜2点）
+ */
+function computeOrthoWaypoints(startPt, startSide, endPt, endSide) {
+  const sx = startPt.x, sy = startPt.y;
+  const ex = endPt.x,   ey = endPt.y;
+  const TOL = 3;
+
+  const isH = s => s === 'left' || s === 'right';
+  const isV = s => s === 'top'  || s === 'bottom';
+
+  if (Math.abs(sx - ex) <= TOL && Math.abs(sy - ey) <= TOL) return [];
+
+  if (isH(startSide) && isH(endSide)) {
+    if (Math.abs(sy - ey) <= TOL) return [];          // 同一水平線
+    const mx = (sx + ex) / 2;
+    return [{x: mx, y: sy}, {x: mx, y: ey}];          // S字（垂直中継）
+  }
+  if (isV(startSide) && isV(endSide)) {
+    if (Math.abs(sx - ex) <= TOL) return [];          // 同一垂直線
+    const my = (sy + ey) / 2;
+    return [{x: sx, y: my}, {x: ex, y: my}];          // S字（水平中継）
+  }
+  if (isH(startSide) && isV(endSide)) return [{x: ex, y: sy}]; // L字
+  if (isV(startSide) && isH(endSide)) return [{x: sx, y: ey}]; // L字
+
+  // フリー端点
+  if (Math.abs(sy - ey) <= TOL) return [];
+  if (Math.abs(sx - ex) <= TOL) return [];
+  if (isH(startSide)) return [{x: ex, y: sy}];
+  if (isV(startSide)) return [{x: sx, y: ey}];
+  if (isH(endSide))   return [{x: sx, y: ey}];
+  if (isV(endSide))   return [{x: ex, y: sy}];
+  return [{x: ex, y: sy}]; // デフォルトL字
+}
+
 // --- 矢印ポイント列 ---
 
-/** 矢印の全座標列 [始点, ...中間点, 終点] を返す */
+/**
+ * 矢印の全座標列 [始点, ...中間点, 終点] を返す
+ * waypoints が空の場合は computeOrthoWaypoints() で自動計算
+ */
 function arrowPoints(arrow) {
-  return [
-    resolveEndpoint(arrow.start),
-    ...arrow.waypoints,
-    resolveEndpoint(arrow.end),
-  ];
+  const start = resolveEndpoint(arrow.start);
+  const end   = resolveEndpoint(arrow.end);
+
+  if (arrow.waypoints.length === 0) {
+    const auto = computeOrthoWaypoints(
+      start, arrow.start.side,
+      end,   arrow.end.side
+    );
+    return [start, ...auto, end];
+  }
+  return [start, ...arrow.waypoints, end];
 }
 
 /** 矢印の中間点（ラベル位置）を返す */
@@ -713,16 +761,27 @@ function hitWaypointHandle(arrow, px, py) {
 }
 
 /**
- * セグメント中点ハンドルへのヒット
- * 戻り値: セグメントインデックス | null
- * （このセグメントの直後にウェイポイントを挿入する）
+ * 選択中矢印のセグメントへのヒット（端点・ウェイポイントハンドル近傍は除外）
+ * 戻り値: { segIdx, orientation:'H'|'V' } | null
  */
-function hitSegmentMid(arrow, px, py) {
+function hitArrowSegment(arrow, px, py) {
   const pts = arrowPoints(arrow);
-  for (let i = 0; i < pts.length - 1; i++) {
-    const mx = (pts[i].x + pts[i+1].x) / 2;
-    const my = (pts[i].y + pts[i+1].y) / 2;
-    if (dist2(px, py, mx, my) <= HANDLE_R + 2) return i;
+  const n   = pts.length;
+
+  // 端点ハンドルに近い場合は除外（端点ドラッグが優先）
+  if (dist2(px, py, pts[0].x,   pts[0].y)   <= HANDLE_R + 4) return null;
+  if (dist2(px, py, pts[n-1].x, pts[n-1].y) <= HANDLE_R + 4) return null;
+  // ウェイポイントハンドルに近い場合も除外
+  for (const wp of arrow.waypoints) {
+    if (dist2(px, py, wp.x, wp.y) <= HANDLE_R + 2) return null;
+  }
+
+  for (let i = 0; i < n - 1; i++) {
+    if (!pointNearSegment(px, py, pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y, HIT_ARROW)) continue;
+    const dx = Math.abs(pts[i+1].x - pts[i].x);
+    const dy = Math.abs(pts[i+1].y - pts[i].y);
+    const orientation = dy <= dx * 0.3 + 1 ? 'H' : 'V';
+    return { segIdx: i, orientation };
   }
   return null;
 }
@@ -957,18 +1016,23 @@ function onSelectDown(x, y) {
         state.drag = { type: 'wp-move', id: arrow.id, idx: wpi };
         return;
       }
-      // セグメント中点ハンドル（クリックで折れ点挿入）
-      const segi = hitSegmentMid(arrow, x, y);
-      if (segi !== null) {
-        const pts = arrowPoints(arrow);
-        const nx  = (pts[segi].x + pts[segi+1].x) / 2;
-        const ny  = (pts[segi].y + pts[segi+1].y) / 2;
-        // segi番目のセグメントは pts[segi]→pts[segi+1]
-        // pts[0]=start, pts[1..n-1]=waypoints, pts[n]=end
-        // waypoints[segi-1] の直後に挿入（segi=0なら先頭に挿入）
-        arrow.waypoints.splice(segi, 0, { x: nx, y: ny });
-        state.drag = { type: 'wp-move', id: arrow.id, idx: segi };
-        render();
+      // セグメントドラッグ（折れ位置の移動）
+      const segHit = hitArrowSegment(arrow, x, y);
+      if (segHit !== null) {
+        // waypoints が空（自動ルート中）なら現在の計算値を確定させる
+        if (arrow.waypoints.length === 0) {
+          const pts = arrowPoints(arrow);
+          arrow.waypoints = pts.slice(1, -1).map(p => ({x: p.x, y: p.y}));
+        }
+        state.drag = {
+          type        : 'seg-move',
+          id          : arrow.id,
+          segIdx      : segHit.segIdx,
+          orientation : segHit.orientation,
+          startX      : x, startY: y,
+          origWaypoints: arrow.waypoints.map(p => ({...p})),
+          nPts        : arrow.waypoints.length + 2,
+        };
         return;
       }
     }
@@ -1027,6 +1091,30 @@ function onDragMove(x, y) {
   } else if (d.type === 'wp-move') {
     const arrow = state.arrows.get(d.id);
     if (arrow) { arrow.waypoints[d.idx] = { x, y }; render(); }
+
+  } else if (d.type === 'seg-move') {
+    const arrow = state.arrows.get(d.id);
+    if (!arrow) return;
+    const dx = x - d.startX;
+    const dy = y - d.startY;
+    const i  = d.segIdx;
+    const n  = d.nPts;  // start + waypoints + end の総点数
+
+    // origWaypoints から毎フレーム再計算（相対移動）
+    arrow.waypoints = d.origWaypoints.map(p => ({...p}));
+
+    if (d.orientation === 'H') {
+      // 水平セグメントを上下に動かす → 両端ウェイポイントのY座標を変更
+      // pts[i]   = waypoints[i-1] (i > 0 のとき)
+      // pts[i+1] = waypoints[i]   (i < n-1 のとき)
+      if (i > 0   && i-1 < arrow.waypoints.length) arrow.waypoints[i-1].y += dy;
+      if (i < n-2 && i   < arrow.waypoints.length) arrow.waypoints[i].y   += dy;
+    } else {
+      // 垂直セグメントを左右に動かす → 両端ウェイポイントのX座標を変更
+      if (i > 0   && i-1 < arrow.waypoints.length) arrow.waypoints[i-1].x += dx;
+      if (i < n-2 && i   < arrow.waypoints.length) arrow.waypoints[i].x   += dx;
+    }
+    render();
 
   } else if (d.type === 'ep-move') {
     const arrow = state.arrows.get(d.id);
@@ -1267,13 +1355,25 @@ function renderArrow(arrow) {
       }, layerOverlay);
     });
 
-    // セグメント中点ハンドル（クリックで折れ点追加）
+    // セグメント中点: ドラッグ方向を示すインジケータ
     for (let i = 0; i < pts.length - 1; i++) {
-      const mx = (pts[i].x + pts[i+1].x) / 2;
-      const my = (pts[i].y + pts[i+1].y) / 2;
-      mkEl('circle', {
-        cx: mx, cy: my, r: HANDLE_R - 2,
-        fill: '#4299e1', opacity: '0.6', cursor: 'crosshair',
+      const mx  = (pts[i].x + pts[i+1].x) / 2;
+      const my  = (pts[i].y + pts[i+1].y) / 2;
+      const dx  = Math.abs(pts[i+1].x - pts[i].x);
+      const dy2 = Math.abs(pts[i+1].y - pts[i].y);
+      const isH = dy2 <= dx * 0.3 + 1;
+      const cur = isH ? 'ns-resize' : 'ew-resize';
+      // 短いセグメントはスキップ
+      const len = dist2(pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y);
+      if (len < 20) continue;
+      // 細長い矩形でドラッグ方向を示す
+      const rw = isH ? 10 : 4;
+      const rh = isH ? 4  : 10;
+      mkEl('rect', {
+        x: mx - rw/2, y: my - rh/2, width: rw, height: rh,
+        rx: 2,
+        fill: '#4299e1', opacity: '0.7',
+        cursor: cur,
         'data-seg': i, 'data-aid': arrow.id,
       }, layerOverlay);
     }
@@ -1386,15 +1486,26 @@ svgEl.addEventListener('dblclick', e => {
     return;
   }
 
-  // 選択ツール: ウェイポイント上でダブルクリック → 折れ点削除
+  // 選択ツール: 矢印上でダブルクリック → ウェイポイントをリセット（自動ルートに戻す）
   if (state.tool === 'select' && state.selection?.type === 'arrow') {
     const arrow = state.arrows.get(state.selection.id);
     if (arrow) {
+      // ウェイポイントハンドル上 → 1点削除
       const wpi = hitWaypointHandle(arrow, x, y);
       if (wpi !== null) {
+        pushHistory();
         arrow.waypoints.splice(wpi, 1);
         render();
         showStatus('折れ点を削除しました');
+        return;
+      }
+      // セグメント上 → 全ウェイポイントをリセットして自動ルートに戻す
+      const segHit = hitArrowSegment(arrow, x, y);
+      if (segHit !== null && arrow.waypoints.length > 0) {
+        pushHistory();
+        arrow.waypoints = [];
+        render();
+        showStatus('自動ルートに戻しました（ダブルクリック）');
         return;
       }
     }
