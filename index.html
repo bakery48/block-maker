@@ -244,6 +244,16 @@
   <button class="tb-btn" id="btn-png" title="PNG出力">
     <span class="icon">📷</span><span class="label">PNG</span>
   </button>
+  <div class="tb-sep"></div>
+
+  <button class="tb-btn" id="btn-bg-color" title="背景色">
+    <span id="bg-color-swatch" style="display:inline-block;width:14px;height:14px;border:1.5px solid #718096;border-radius:2px;background:#ffffff;flex-shrink:0;"></span>
+    <span class="label">背景</span>
+  </button>
+  <input type="color" id="bg-color-input" value="#ffffff" style="display:none">
+
+  <div class="tb-sep"></div>
+
   <button class="tb-btn danger" id="btn-clear" title="クリア">
     <span class="icon">🗑</span><span class="label">クリア</span>
   </button>
@@ -426,6 +436,9 @@ const state = {
 
   // グループ: groupId -> Set<selKey>
   groups   : new Map(),
+
+  // キャンバス背景色
+  bgColor  : '#ffffff',
   /*
    * drawing = {
    *   points     : {x,y}[]       — クリックで確定した点（先頭=始点）
@@ -605,6 +618,7 @@ function serialize() {
     blocks  : [...state.blocks.values()],
     arrows  : [...state.arrows.values()],
     groups  : [...state.groups.entries()].map(([gid, members]) => ({ gid, members: [...members] })),
+    bgColor : state.bgColor,
   }, null, 2);
 }
 
@@ -616,6 +630,7 @@ function deserialize(json) {
   (data.blocks || []).forEach(b => state.blocks.set(b.id, b));
   (data.arrows || []).forEach(a => state.arrows.set(a.id, a));
   (data.groups || []).forEach(({ gid, members }) => state.groups.set(gid, new Set(members)));
+  state.bgColor    = data.bgColor ?? '#ffffff';
   state.nextId     = data.nextId ?? 1;
   state.selections.clear();
   state.drag       = null;
@@ -936,6 +951,15 @@ const layerBlocks  = document.getElementById('layer-blocks');
 const layerArrows  = document.getElementById('layer-arrows');
 const layerOverlay = document.getElementById('layer-overlay');
 
+/** 背景色が明るいかどうかを返す（テキスト色の自動切替に使用） */
+function isLightBg() {
+  const hex = state.bgColor || '#ffffff';
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128;
+}
+
 /** SVG名前空間付きで要素を作成し、attrs をセットして parent に追加 */
 function mkEl(tag, attrs = {}, parent = null) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -956,7 +980,7 @@ function renderBlockText(g, block) {
     'font-size'  : '13',
     'font-family': 'Segoe UI, Yu Gothic UI, sans-serif',
     'text-anchor': 'middle',
-    fill         : '#e2e8f0',
+    fill         : isLightBg() ? '#1a202c' : '#e2e8f0',
     'pointer-events': 'none',
     'user-select'   : 'none',
   }, g);
@@ -983,9 +1007,10 @@ function renderBlock(block) {
   }, g);
 
   // --- 本体（角なし） ---
+  const light = isLightBg();
   mkEl('rect', {
     x, y, width: w, height: h,
-    fill          : sel ? color + '40' : color + '22',
+    fill          : sel ? color + (light ? '55' : '40') : color + (light ? '33' : '22'),
     stroke        : color,
     'stroke-width': sel ? 2.5 : 1.5,
   }, g);
@@ -1531,6 +1556,10 @@ function renderGroups() {
 
 /** render() に矢印描画を組み込む（ステップ4のrenderを上書き） */
 function render() {
+  // 背景色を適用
+  document.getElementById('bg').setAttribute('fill', state.bgColor);
+  document.getElementById('bg-color-swatch').style.background = state.bgColor;
+
   layerBlocks.innerHTML  = '';
   layerArrows.innerHTML  = '';
   layerOverlay.innerHTML = '';
@@ -1995,11 +2024,11 @@ function exportPNG() {
   // マーカー定義をコピー（矢印ヘッドに必要）
   tmpSvg.appendChild(document.getElementById('svg-defs').cloneNode(true));
 
-  // ダーク背景（エディタと同じ色で半透明フィルが正しく見えるようにする）
+  // 背景（state.bgColor で半透明フィルが正しく見えるようにする）
   const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
   bgRect.setAttribute('x', vx); bgRect.setAttribute('y', vy);
   bgRect.setAttribute('width', vw); bgRect.setAttribute('height', vh);
-  bgRect.setAttribute('fill', '#1e2533');
+  bgRect.setAttribute('fill', state.bgColor);
   tmpSvg.appendChild(bgRect);
 
   // グループ枠・矢印・ブロックをコピー
@@ -2017,7 +2046,7 @@ function exportPNG() {
     canvas.width  = vw;
     canvas.height = vh;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#1e2533';
+    ctx.fillStyle = state.bgColor;
     ctx.fillRect(0, 0, vw, vh);
     ctx.drawImage(img, 0, 0, vw, vh);
     URL.revokeObjectURL(url);
@@ -2037,12 +2066,22 @@ function exportPNG() {
 
 document.getElementById('btn-png').addEventListener('click', exportPNG);
 
+// --- 背景色 ---
+const bgColorInput = document.getElementById('bg-color-input');
+document.getElementById('btn-bg-color').addEventListener('click', () => bgColorInput.click());
+bgColorInput.addEventListener('input', e => {
+  state.bgColor = e.target.value;
+  render();
+});
+bgColorInput.addEventListener('change', () => pushHistory());
+
 // --- クリア ---
 document.getElementById('btn-clear').addEventListener('click', () => {
   if (!confirm('すべてクリアしますか？')) return;
   state.blocks.clear();
   state.arrows.clear();
   state.groups.clear();
+  state.bgColor   = '#ffffff';
   state.nextId    = 1;
   state.selections.clear();
   state.drag      = null;
