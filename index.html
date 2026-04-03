@@ -403,8 +403,244 @@ function deserialize(json) {
   state.drawing   = null;
 }
 
+// ============================================================
+// ステップ3: ジオメトリ関数
+// ============================================================
+
+const SNAP_DIST   = 24;   // スナップ有効距離（px）
+const HIT_ARROW   = 8;    // 矢印クリック判定の太さ（px）
+const HANDLE_R    = 6;    // ハンドル半径（px）
+const MIN_W       = 80;
+const MIN_H       = 40;
+const DEFAULT_W   = 140;
+const DEFAULT_H   = 60;
+
+// --- 基本 ---
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function dist2(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
+
+// --- ブロック周囲点 ---
+
+/**
+ * side + t からブロック辺上の絶対座標を返す
+ * top   : t=0 → 左上,  t=1 → 右上
+ * right : t=0 → 右上,  t=1 → 右下
+ * bottom: t=0 → 右下,  t=1 → 左下
+ * left  : t=0 → 左下,  t=1 → 左上
+ */
+function perimeterPoint(block, side, t) {
+  const { x, y, w, h } = block;
+  switch (side) {
+    case 'top'   : return { x: x + t * w,       y: y           };
+    case 'right' : return { x: x + w,            y: y + t * h   };
+    case 'bottom': return { x: x + w - t * w,    y: y + h       };
+    case 'left'  : return { x: x,                y: y + h - t * h };
+  }
+}
+
+/**
+ * 点 (px,py) に最も近いブロック辺上の点を返す
+ * 戻り値: { side, t, x, y, dist }
+ */
+function nearestPerimeterPoint(block, px, py) {
+  const { x, y, w, h } = block;
+
+  // 各辺の最近傍点（辺上にクランプ）
+  const candidates = [
+    { side: 'top',    cx: clamp(px, x, x+w), cy: y           },
+    { side: 'right',  cx: x+w,               cy: clamp(py, y, y+h) },
+    { side: 'bottom', cx: clamp(px, x, x+w), cy: y+h         },
+    { side: 'left',   cx: x,                 cy: clamp(py, y, y+h) },
+  ];
+
+  // t パラメータを計算
+  candidates[0].t = w > 0 ? (candidates[0].cx - x) / w : 0;
+  candidates[1].t = h > 0 ? (candidates[1].cy - y) / h : 0;
+  candidates[2].t = w > 0 ? (x + w - candidates[2].cx) / w : 0;
+  candidates[3].t = h > 0 ? (y + h - candidates[3].cy) / h : 0;
+
+  let best = null, bestD = Infinity;
+  for (const c of candidates) {
+    const d = dist2(c.cx, c.cy, px, py);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return { side: best.side, t: best.t, x: best.cx, y: best.cy, dist: bestD };
+}
+
+/**
+ * Endpoint の実座標を返す
+ * ブロック接続の場合は現在のブロック位置から計算し直す
+ */
+function resolveEndpoint(ep) {
+  if (ep.blockId != null) {
+    const block = state.blocks.get(ep.blockId);
+    if (block) return perimeterPoint(block, ep.side, ep.t);
+  }
+  return { x: ep.x, y: ep.y };
+}
+
+// --- 矢印ポイント列 ---
+
+/** 矢印の全座標列 [始点, ...中間点, 終点] を返す */
+function arrowPoints(arrow) {
+  return [
+    resolveEndpoint(arrow.start),
+    ...arrow.waypoints,
+    resolveEndpoint(arrow.end),
+  ];
+}
+
+/** 矢印の中間点（ラベル位置）を返す */
+function arrowMidpoint(arrow) {
+  const pts = arrowPoints(arrow);
+  let total = 0;
+  const segs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const d = dist2(pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y);
+    segs.push(d);
+    total += d;
+  }
+  let remain = total / 2;
+  for (let i = 0; i < segs.length; i++) {
+    if (remain <= segs[i] + 1e-9) {
+      const t = segs[i] > 0 ? remain / segs[i] : 0;
+      return {
+        x: pts[i].x + t * (pts[i+1].x - pts[i].x),
+        y: pts[i].y + t * (pts[i+1].y - pts[i].y),
+      };
+    }
+    remain -= segs[i];
+  }
+  return pts[Math.floor(pts.length / 2)];
+}
+
+// --- ヒットテスト ---
+
+/** 点が矩形の内側かどうか */
+function pointInBlock(block, px, py) {
+  return px >= block.x && px <= block.x + block.w
+      && py >= block.y && py <= block.y + block.h;
+}
+
+/** 点が線分の近傍かどうか */
+function pointNearSegment(px, py, x1, y1, x2, y2, threshold) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len2 = dx*dx + dy*dy;
+  if (len2 === 0) return dist2(px, py, x1, y1) <= threshold;
+  const t = clamp(((px-x1)*dx + (py-y1)*dy) / len2, 0, 1);
+  return dist2(px, py, x1 + t*dx, y1 + t*dy) <= threshold;
+}
+
+/** 点が矢印ライン上にあるか */
+function pointOnArrow(arrow, px, py) {
+  const pts = arrowPoints(arrow);
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (pointNearSegment(px, py, pts[i].x, pts[i].y,
+                                 pts[i+1].x, pts[i+1].y, HIT_ARROW)) return true;
+  }
+  return false;
+}
+
+/**
+ * (px,py) でヒットした要素を返す
+ * 優先順: ブロック > 矢印
+ * 戻り値: { type:'block'|'arrow', id } | null
+ */
+function hitTest(px, py) {
+  // ブロックは後から追加されたものが手前 → Mapの末尾から検索
+  const blocks = [...state.blocks.values()];
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (pointInBlock(blocks[i], px, py)) return { type: 'block', id: blocks[i].id };
+  }
+  const arrows = [...state.arrows.values()];
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    if (pointOnArrow(arrows[i], px, py)) return { type: 'arrow', id: arrows[i].id };
+  }
+  return null;
+}
+
+// --- スナップ検出 ---
+
+/**
+ * (px,py) に近いブロック辺のスナップ点を探す
+ * excludeId: 除外するブロックID（矢印始点のブロックなど）
+ * 戻り値: { blockId, side, t, x, y } | null
+ */
+function findSnap(px, py, excludeId = null) {
+  let best = null, bestD = SNAP_DIST;
+  for (const block of state.blocks.values()) {
+    if (block.id === excludeId) continue;
+    const p = nearestPerimeterPoint(block, px, py);
+    if (p.dist < bestD) {
+      bestD = p.dist;
+      best = { blockId: block.id, side: p.side, t: p.t, x: p.x, y: p.y };
+    }
+  }
+  return best;
+}
+
+// --- リサイズハンドル ---
+
+/**
+ * 選択中ブロックのリサイズハンドル一覧を返す
+ * 各ハンドル: { x, y, dir }
+ * dir は 'n'|'ne'|'e'|'se'|'s'|'sw'|'w'|'nw' (compass 方向)
+ */
+function resizeHandles(block) {
+  const { x, y, w, h } = block;
+  return [
+    { x: x+w/2, y: y,     dir: 'n'  },
+    { x: x+w,   y: y,     dir: 'ne' },
+    { x: x+w,   y: y+h/2, dir: 'e'  },
+    { x: x+w,   y: y+h,   dir: 'se' },
+    { x: x+w/2, y: y+h,   dir: 's'  },
+    { x: x,     y: y+h,   dir: 'sw' },
+    { x: x,     y: y+h/2, dir: 'w'  },
+    { x: x,     y: y,     dir: 'nw' },
+  ];
+}
+
+/** (px,py) に近いリサイズハンドルを返す（なければ null） */
+function hitResizeHandle(block, px, py) {
+  for (const h of resizeHandles(block)) {
+    if (dist2(px, py, h.x, h.y) <= HANDLE_R + 2) return h;
+  }
+  return null;
+}
+
+/** (px,py) に近いウェイポイントハンドルを返す（なければ null） */
+function hitWaypointHandle(arrow, px, py) {
+  for (let i = 0; i < arrow.waypoints.length; i++) {
+    const wp = arrow.waypoints[i];
+    if (dist2(px, py, wp.x, wp.y) <= HANDLE_R + 2) return i;
+  }
+  return null;
+}
+
+/**
+ * セグメント中点ハンドルへのヒット
+ * 戻り値: セグメントインデックス | null
+ * （このセグメントの直後にウェイポイントを挿入する）
+ */
+function hitSegmentMid(arrow, px, py) {
+  const pts = arrowPoints(arrow);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const mx = (pts[i].x + pts[i+1].x) / 2;
+    const my = (pts[i].y + pts[i+1].y) / 2;
+    if (dist2(px, py, mx, my) <= HANDLE_R + 2) return i;
+  }
+  return null;
+}
+
+// --- SVG座標取得 ---
+const svgEl = document.getElementById('canvas');
+function svgPoint(e) {
+  const r = svgEl.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
 // 動作確認
-showStatus('ステップ2完了: データモデルOK ✔');
+showStatus('ステップ3完了: ジオメトリ関数OK ✔');
 </script>
 </body>
 </html>
