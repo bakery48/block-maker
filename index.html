@@ -257,6 +257,16 @@
 
   <div class="tb-sep"></div>
 
+  <!-- 文字色 -->
+  <button class="tb-btn" id="btn-text-color" title="文字色">
+    <span style="font-size:13px;font-weight:bold;line-height:1;">A</span>
+    <span id="text-color-swatch" style="display:inline-block;width:14px;height:4px;border-radius:1px;background:#1a202c;flex-shrink:0;margin-left:2px;"></span>
+    <span class="label">文字色</span>
+  </button>
+  <input type="color" id="text-color-input" value="#1a202c" style="display:none">
+
+  <div class="tb-sep"></div>
+
   <!-- ファイル -->
   <button class="tb-btn" id="btn-save" title="保存 (Ctrl+S)">
     <span class="icon">💾</span><span class="label">保存</span>
@@ -1066,7 +1076,7 @@ function renderBlockText(g, block) {
     'font-family'       : 'Segoe UI, Yu Gothic UI, sans-serif',
     'text-anchor'       : 'middle',
     'dominant-baseline' : 'central',
-    fill                : '#1a202c',
+    fill                : block.textColor || '#1a202c',
     'pointer-events'    : 'none',
     'user-select'       : 'none',
   }, g);
@@ -1211,10 +1221,15 @@ document.getElementById('btn-dist-v').addEventListener('click', distributeV);
 
 function updateAlignButtons() {
   const sels = getSelections().filter(s => s.type === 'block');
-  const cur  = sels.length > 0 ? (state.blocks.get(sels[0].id)?.textVAlign || 'middle') : null;
+  const first = sels.length > 0 ? state.blocks.get(sels[0].id) : null;
+  const cur   = first?.textVAlign || (first ? 'middle' : null);
   document.getElementById('btn-align-top').classList.toggle('active', cur === 'top');
   document.getElementById('btn-align-mid').classList.toggle('active', cur === 'middle');
   document.getElementById('btn-align-bot').classList.toggle('active', cur === 'bottom');
+  // 文字色スウォッチを選択ブロックの色に同期
+  const tc = first?.textColor || '#1a202c';
+  document.getElementById('text-color-swatch').style.background = tc;
+  document.getElementById('text-color-input').value = tc;
 }
 
 // --- マウス状態 ---
@@ -2276,6 +2291,19 @@ bgColorInput.addEventListener('input', e => {
   render();
 });
 bgColorInput.addEventListener('change', () => pushHistory());
+
+// --- 文字色 ---
+const textColorInput = document.getElementById('text-color-input');
+document.getElementById('btn-text-color').addEventListener('click', () => textColorInput.click());
+textColorInput.addEventListener('input', e => {
+  const hex = e.target.value;
+  for (const { type, id } of getSelections()) {
+    if (type === 'block') { const b = state.blocks.get(id); if (b) b.textColor = hex; }
+  }
+  document.getElementById('text-color-swatch').style.background = hex;
+  render();
+});
+textColorInput.addEventListener('change', () => pushHistory());
 
 // --- クリア ---
 document.getElementById('btn-clear').addEventListener('click', () => {
