@@ -838,7 +838,34 @@ function onSelectDown(x, y) {
     }
   }
 
-  // 2. ヒットテスト
+  // 2. 選択中矢印のウェイポイントハンドルを優先チェック
+  if (state.selection?.type === 'arrow') {
+    const arrow = state.arrows.get(state.selection.id);
+    if (arrow) {
+      // ウェイポイントハンドル（ドラッグ移動）
+      const wpi = hitWaypointHandle(arrow, x, y);
+      if (wpi !== null) {
+        state.drag = { type: 'wp-move', id: arrow.id, idx: wpi };
+        return;
+      }
+      // セグメント中点ハンドル（クリックで折れ点挿入）
+      const segi = hitSegmentMid(arrow, x, y);
+      if (segi !== null) {
+        const pts = arrowPoints(arrow);
+        const nx  = (pts[segi].x + pts[segi+1].x) / 2;
+        const ny  = (pts[segi].y + pts[segi+1].y) / 2;
+        // segi番目のセグメントは pts[segi]→pts[segi+1]
+        // pts[0]=start, pts[1..n-1]=waypoints, pts[n]=end
+        // waypoints[segi-1] の直後に挿入（segi=0なら先頭に挿入）
+        arrow.waypoints.splice(segi, 0, { x: nx, y: ny });
+        state.drag = { type: 'wp-move', id: arrow.id, idx: segi };
+        render();
+        return;
+      }
+    }
+  }
+
+  // 3. ヒットテスト
   const hit = hitTest(x, y);
   if (hit) {
     setSelection(hit.type, hit.id);
@@ -886,7 +913,15 @@ function onDragMove(x, y) {
 
   } else if (d.type === 'create') {
     d.cx = x; d.cy = y;
-    render(); // オーバーレイにプレビュー矩形を描画
+    render();
+
+  } else if (d.type === 'wp-move') {
+    // ウェイポイントをマウス位置に追従
+    const arrow = state.arrows.get(d.id);
+    if (arrow) {
+      arrow.waypoints[d.idx] = { x, y };
+      render();
+    }
   }
 }
 
@@ -1205,22 +1240,32 @@ svgEl.addEventListener('click', e => {
   }, 220);
 });
 
-// --- dblclick: 空白でダブルクリック → その場で終了（フリー終点） ---
+// --- dblclick: 矢印ツール中 → フリー終点確定 / 選択ツール中 → テキスト編集 ---
 svgEl.addEventListener('dblclick', e => {
-  if (state.tool !== 'arrow' || !state.drawing) return;
-  e.stopPropagation();
-
-  clearTimeout(_arrowClickTimer);
-  _arrowClickTimer = null;
-
   const { x, y } = svgPoint(e);
-  const snap = state.drawing.snap;
 
-  if (snap) {
-    finishArrow(snap);
-  } else {
-    // フリー終点で確定
-    finishArrow(null, { x, y });
+  // 矢印描画中のダブルクリック → 確定
+  if (state.tool === 'arrow' && state.drawing) {
+    e.stopPropagation();
+    clearTimeout(_arrowClickTimer);
+    _arrowClickTimer = null;
+    const snap = state.drawing.snap;
+    snap ? finishArrow(snap) : finishArrow(null, { x, y });
+    return;
+  }
+
+  // 選択ツール: ウェイポイント上でダブルクリック → 折れ点削除
+  if (state.tool === 'select' && state.selection?.type === 'arrow') {
+    const arrow = state.arrows.get(state.selection.id);
+    if (arrow) {
+      const wpi = hitWaypointHandle(arrow, x, y);
+      if (wpi !== null) {
+        arrow.waypoints.splice(wpi, 1);
+        render();
+        showStatus('折れ点を削除しました');
+        return;
+      }
+    }
   }
 });
 
@@ -1336,7 +1381,7 @@ function renderSnapIndicator(x, y) {
   );
 
   render();
-  showStatus('ステップ7完了: スナップ接続OK ✔  A=矢印ツール → ブロック辺をクリックして接続');
+  showStatus('ステップ8完了: 矢印曲げOK ✔  矢印選択→青丸ドラッグで折れ点移動 / 小丸クリックで追加 / 青丸ダブルクリックで削除');
 })();
 </script>
 </body>
