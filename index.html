@@ -401,8 +401,8 @@ const state = {
   // ツール: 'select' | 'block' | 'arrow'
   tool     : 'select',
 
-  // 選択: { type: 'block'|'arrow', id } | null
-  selection: null,
+  // 複数選択: Map< "block-1"|"arrow-2", {type,id} >
+  selections: new Map(),
 
   // ドラッグ中の情報（種類によって構造が変わる）
   drag     : null,
@@ -447,33 +447,49 @@ function makeFreeEndpoint(x, y) {
   return { blockId: null, side: null, t: null, x, y };
 }
 
-/** 選択をセット */
+// --- 選択ヘルパー ---
+function selKey(type, id)      { return `${type}-${id}`; }
+function isSelected(type, id)  { return state.selections.has(selKey(type, id)); }
+function getSelections()       { return [...state.selections.values()]; }
+
+/** 単独選択（既存選択をクリアして1つを選ぶ） */
 function setSelection(type, id) {
-  state.selection = { type, id };
+  state.selections.clear();
+  state.selections.set(selKey(type, id), { type, id });
 }
 
-/** 選択を解除 */
-function clearSelection() {
-  state.selection = null;
+/** Ctrl+クリック用: 追加／除去トグル */
+function toggleSelection(type, id) {
+  const k = selKey(type, id);
+  state.selections.has(k) ? state.selections.delete(k)
+                          : state.selections.set(k, { type, id });
 }
 
-/** 選択中の要素を削除 */
+/** 選択を全解除 */
+function clearSelection() { state.selections.clear(); }
+
+/** 選択中の要素をすべて削除（ブロックに接続した矢印も一括削除） */
 function deleteSelected() {
-  if (!state.selection) return;
+  if (state.selections.size === 0) return;
   pushHistory();
-  const { type, id } = state.selection;
-  if (type === 'block') {
-    state.blocks.delete(id);
-    // 接続している矢印も削除
-    for (const [aid, arrow] of state.arrows) {
-      if (arrow.start.blockId === id || arrow.end.blockId === id) {
-        state.arrows.delete(aid);
+  for (const { type, id } of getSelections()) {
+    if (type === 'block') {
+      state.blocks.delete(id);
+      for (const [aid, arrow] of state.arrows) {
+        if (arrow.start.blockId === id || arrow.end.blockId === id)
+          state.arrows.delete(aid);
       }
+    } else if (type === 'arrow') {
+      state.arrows.delete(id);
     }
-  } else if (type === 'arrow') {
-    state.arrows.delete(id);
   }
   clearSelection();
+}
+
+/** 後方互換: 単一選択を返す（単独操作用） */
+function getSingleSelection() {
+  if (state.selections.size !== 1) return null;
+  return [...state.selections.values()][0];
 }
 
 // --- シリアライズ / デシリアライズ ---
@@ -492,10 +508,10 @@ function deserialize(json) {
   state.arrows.clear();
   (data.blocks || []).forEach(b => state.blocks.set(b.id, b));
   (data.arrows || []).forEach(a => state.arrows.set(a.id, a));
-  state.nextId   = data.nextId ?? 1;
-  state.selection = null;
-  state.drag      = null;
-  state.drawing   = null;
+  state.nextId     = data.nextId ?? 1;
+  state.selections.clear();
+  state.drag       = null;
+  state.drawing    = null;
 }
 
 // ============================================================
@@ -844,7 +860,7 @@ function renderBlockText(g, block) {
 
 /** ブロック1つを SVG で描画する */
 function renderBlock(block) {
-  const sel = state.selection?.type === 'block' && state.selection.id === block.id;
+  const sel = isSelected('block', block.id);
   const { x, y, w, h } = block;
 
   const g = mkEl('g', { 'data-bid': block.id }, layerBlocks);
@@ -943,7 +959,7 @@ svgEl.addEventListener('mousedown', e => {
 
   hideCtxMenu();
 
-  if (state.tool === 'select') onSelectDown(x, y);
+  if (state.tool === 'select') onSelectDown(x, y, e.ctrlKey || e.metaKey);
   if (state.tool === 'block')  onBlockDown(x, y);
   // arrow は mousedown ではなく click で処理（ステップ7）
 });
@@ -970,70 +986,52 @@ document.addEventListener('mouseup', e => {
 // ============================================================
 // 選択ツール: mousedown
 // ============================================================
-function onSelectDown(x, y) {
-  // 1. 選択中ブロックのリサイズハンドルを優先チェック
-  if (state.selection?.type === 'block') {
-    const block = state.blocks.get(state.selection.id);
-    if (block) {
-      const h = hitResizeHandle(block, x, y);
-      if (h) {
-        state.drag = {
-          type: 'resize',
-          id  : block.id,
-          dir : h.dir,
-          ox: block.x, oy: block.y, ow: block.w, oh: block.h,
-          mx: x, my: y,
-        };
-        return;
-      }
-    }
-  }
-
-  // 2. 選択中矢印のハンドルを優先チェック（端点 → ウェイポイント → セグメント中点）
-  if (state.selection?.type === 'arrow') {
-    const arrow = state.arrows.get(state.selection.id);
-    if (arrow) {
-      // 端点ハンドル（始点・終点の移動・再接続）
-      const which = hitEndpointHandle(arrow, x, y);
-      if (which !== null) {
-        state.drag = {
-          type    : 'ep-move',
-          id      : arrow.id,
-          which,                        // 'start' | 'end'
-          snap    : null,               // 現在のスナップ候補
-        };
-        return;
-      }
-    }
-  }
-
-  if (state.selection?.type === 'arrow') {
-    const arrow = state.arrows.get(state.selection.id);
-    if (arrow) {
-      // ウェイポイントハンドル（ドラッグ移動）
-      const wpi = hitWaypointHandle(arrow, x, y);
-      if (wpi !== null) {
-        state.drag = { type: 'wp-move', id: arrow.id, idx: wpi };
-        return;
-      }
-      // セグメントドラッグ（折れ位置の移動）
-      const segHit = hitArrowSegment(arrow, x, y);
-      if (segHit !== null) {
-        // waypoints が空（自動ルート中）なら現在の計算値を確定させる
-        if (arrow.waypoints.length === 0) {
-          const pts = arrowPoints(arrow);
-          arrow.waypoints = pts.slice(1, -1).map(p => ({x: p.x, y: p.y}));
+function onSelectDown(x, y, ctrlKey) {
+  // 1. 単独選択中ブロックのリサイズハンドル（Ctrl非押下かつ単独選択時のみ）
+  if (!ctrlKey) {
+    const single = getSingleSelection();
+    if (single?.type === 'block') {
+      const block = state.blocks.get(single.id);
+      if (block) {
+        const h = hitResizeHandle(block, x, y);
+        if (h) {
+          state.drag = {
+            type: 'resize', id: block.id, dir: h.dir,
+            ox: block.x, oy: block.y, ow: block.w, oh: block.h, mx: x, my: y,
+          };
+          return;
         }
-        state.drag = {
-          type        : 'seg-move',
-          id          : arrow.id,
-          segIdx      : segHit.segIdx,
-          orientation : segHit.orientation,
-          startX      : x, startY: y,
-          origWaypoints: arrow.waypoints.map(p => ({...p})),
-          nPts        : arrow.waypoints.length + 2,
-        };
-        return;
+      }
+    }
+
+    // 2. 単独選択中矢印のハンドル（端点 → ウェイポイント → セグメント）
+    if (single?.type === 'arrow') {
+      const arrow = state.arrows.get(single.id);
+      if (arrow) {
+        const which = hitEndpointHandle(arrow, x, y);
+        if (which !== null) {
+          state.drag = { type: 'ep-move', id: arrow.id, which, snap: null };
+          return;
+        }
+        const wpi = hitWaypointHandle(arrow, x, y);
+        if (wpi !== null) {
+          state.drag = { type: 'wp-move', id: arrow.id, idx: wpi };
+          return;
+        }
+        const segHit = hitArrowSegment(arrow, x, y);
+        if (segHit !== null) {
+          if (arrow.waypoints.length === 0) {
+            arrow.waypoints = arrowPoints(arrow).slice(1, -1).map(p => ({x: p.x, y: p.y}));
+          }
+          state.drag = {
+            type: 'seg-move', id: arrow.id,
+            segIdx: segHit.segIdx, orientation: segHit.orientation,
+            startX: x, startY: y,
+            origWaypoints: arrow.waypoints.map(p => ({...p})),
+            nPts: arrow.waypoints.length + 2,
+          };
+          return;
+        }
       }
     }
   }
@@ -1041,15 +1039,22 @@ function onSelectDown(x, y) {
   // 3. ヒットテスト
   const hit = hitTest(x, y);
   if (hit) {
-    setSelection(hit.type, hit.id);
+    if (ctrlKey) {
+      // Ctrl+クリック: 追加/除去トグル
+      toggleSelection(hit.type, hit.id);
+      render();
+      return;
+    }
+    // 既に選択中ならそのまま移動開始（選択解除しない）
+    if (!isSelected(hit.type, hit.id)) setSelection(hit.type, hit.id);
+
     if (hit.type === 'block') {
-      const b = state.blocks.get(hit.id);
-      state.drag = {
-        type: 'move',
-        id  : hit.id,
-        ox  : b.x, oy: b.y,
-        mx  : x,   my: y,
-      };
+      // 選択されているブロック全部の元座標を記録
+      const blocksOrig = getSelections()
+        .filter(s => s.type === 'block')
+        .map(s => { const b = state.blocks.get(s.id); return b ? {id: s.id, ox: b.x, oy: b.y} : null; })
+        .filter(Boolean);
+      state.drag = { type: 'move-multi', blocksOrig, mx: x, my: y };
     }
     render();
   } else {
@@ -1073,11 +1078,12 @@ function onDragMove(x, y) {
   const d = state.drag;
   if (!d) return;
 
-  if (d.type === 'move') {
-    const b = state.blocks.get(d.id);
-    if (!b) return;
-    b.x = d.ox + (x - d.mx);
-    b.y = d.oy + (y - d.my);
+  if (d.type === 'move-multi') {
+    const dx = x - d.mx, dy = y - d.my;
+    for (const {id, ox, oy} of d.blocksOrig) {
+      const b = state.blocks.get(id);
+      if (b) { b.x = ox + dx; b.y = oy + dy; }
+    }
     render();
 
   } else if (d.type === 'resize') {
@@ -1240,7 +1246,7 @@ svgEl.addEventListener('contextmenu', e => {
   const { x, y } = svgPoint(e);
   const hit = hitTest(x, y);
   if (hit) {
-    setSelection(hit.type, hit.id);
+    if (!isSelected(hit.type, hit.id)) setSelection(hit.type, hit.id);
     render();
     showCtxMenu(e.clientX, e.clientY, hit.type);
   }
@@ -1265,7 +1271,7 @@ document.getElementById('ctx-delete').addEventListener('click', () => {
  * ・選択中: ウェイポイントハンドル + セグメント中点ハンドル
  */
 function renderArrow(arrow) {
-  const sel = state.selection?.type === 'arrow' && state.selection.id === arrow.id;
+  const sel = isSelected('arrow', arrow.id);
   const pts = arrowPoints(arrow);
   if (pts.length < 2) return;
 
@@ -1487,8 +1493,9 @@ svgEl.addEventListener('dblclick', e => {
   }
 
   // 選択ツール: 矢印上でダブルクリック → ウェイポイントをリセット（自動ルートに戻す）
-  if (state.tool === 'select' && state.selection?.type === 'arrow') {
-    const arrow = state.arrows.get(state.selection.id);
+  const _dblSel = getSingleSelection();
+  if (state.tool === 'select' && _dblSel?.type === 'arrow') {
+    const arrow = state.arrows.get(_dblSel.id);
     if (arrow) {
       // ウェイポイントハンドル上 → 1点削除
       const wpi = hitWaypointHandle(arrow, x, y);
@@ -1727,9 +1734,10 @@ svgEl.addEventListener('dblclick', e => {
   const { x, y } = svgPoint(e);
 
   // ウェイポイント削除との重複を避けるため先にチェック
-  if (state.selection?.type === 'arrow') {
-    const arrow = state.arrows.get(state.selection.id);
-    if (arrow && hitWaypointHandle(arrow, x, y) !== null) return; // 削除ハンドラに任せる
+  const _dblSel2 = getSingleSelection();
+  if (_dblSel2?.type === 'arrow') {
+    const arrow = state.arrows.get(_dblSel2.id);
+    if (arrow && hitWaypointHandle(arrow, x, y) !== null) return;
   }
 
   const hit = hitTest(x, y);
@@ -1743,18 +1751,19 @@ svgEl.addEventListener('dblclick', e => {
 // --- コンテキストメニューからの編集 ---
 document.getElementById('ctx-edit').addEventListener('click', () => {
   hideCtxMenu();
-  if (state.selection) openEditor(state.selection.type, state.selection.id);
+  const s = getSingleSelection();
+  if (s) openEditor(s.type, s.id);
 });
 document.getElementById('ctx-label').addEventListener('click', () => {
   hideCtxMenu();
-  if (state.selection?.type === 'arrow') openEditor('arrow', state.selection.id);
+  const s = getSingleSelection();
+  if (s?.type === 'arrow') openEditor('arrow', s.id);
 });
 
 // キーボード: F2 でその場編集
 document.addEventListener('keydown', e => {
-  if (e.key === 'F2' && state.selection && !_editing) {
-    openEditor(state.selection.type, state.selection.id);
-  }
+  const s = getSingleSelection();
+  if (e.key === 'F2' && s && !_editing) openEditor(s.type, s.id);
 });
 
 // ============================================================
@@ -1810,7 +1819,7 @@ document.getElementById('btn-clear').addEventListener('click', () => {
   state.blocks.clear();
   state.arrows.clear();
   state.nextId    = 1;
-  state.selection = null;
+  state.selections.clear();
   state.drag      = null;
   state.drawing   = null;
   render();
@@ -1820,15 +1829,14 @@ document.getElementById('btn-clear').addEventListener('click', () => {
 // ============================================================
 // Ctrl+Z / Ctrl+Y: 簡易アンドゥ・リドゥ
 // ============================================================
-const _history  = [];   // { json, selType, selId }[]
+const _history  = [];   // { json, selKeys }[]
 const _future   = [];
 const MAX_HIST  = 60;
 
 function pushHistory() {
   _history.push({
-    json   : serialize(),
-    selType: state.selection?.type ?? null,
-    selId  : state.selection?.id   ?? null,
+    json    : serialize(),
+    selKeys : [...state.selections.keys()],
   });
   if (_history.length > MAX_HIST) _history.shift();
   _future.length = 0;
@@ -1836,20 +1844,17 @@ function pushHistory() {
 
 function applySnapshot(snap) {
   deserialize(snap.json);
-  if (snap.selType && snap.selId != null) {
-    const exists = snap.selType === 'block'
-      ? state.blocks.has(snap.selId)
-      : state.arrows.has(snap.selId);
-    if (exists) setSelection(snap.selType, snap.selId);
-  }
+  // 選択状態を復元
+  (snap.selKeys ?? []).forEach(k => {
+    const [type, idStr] = k.split('-');
+    const id = Number(idStr);
+    const exists = type === 'block' ? state.blocks.has(id) : state.arrows.has(id);
+    if (exists) state.selections.set(k, { type, id });
+  });
   render();
 }
 
-// アンドゥ対象の操作後に呼ぶ
-function withHistory(fn) {
-  pushHistory();
-  fn();
-}
+function withHistory(fn) { pushHistory(); fn(); }
 
 // Ctrl+Z
 document.addEventListener('keydown', e => {
@@ -1857,23 +1862,14 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
     e.preventDefault();
     if (_history.length === 0) return;
-    _future.push({
-      json   : serialize(),
-      selType: state.selection?.type ?? null,
-      selId  : state.selection?.id   ?? null,
-    });
+    _future.push({ json: serialize(), selKeys: [...state.selections.keys()] });
     applySnapshot(_history.pop());
     showStatus('↩ アンドゥ');
   }
-  // Ctrl+Y / Ctrl+Shift+Z
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
     e.preventDefault();
     if (_future.length === 0) return;
-    _history.push({
-      json   : serialize(),
-      selType: state.selection?.type ?? null,
-      selId  : state.selection?.id   ?? null,
-    });
+    _history.push({ json: serialize(), selKeys: [...state.selections.keys()] });
     applySnapshot(_future.pop());
     showStatus('↪ リドゥ');
   }
@@ -1901,17 +1897,21 @@ PALETTE.forEach(hex => {
 
 /** 選択中要素の現在色を返す */
 function getSelectedColor() {
-  if (!state.selection) return null;
-  if (state.selection.type === 'block') {
-    return (state.blocks.get(state.selection.id) ?? {}).color ?? DEFAULT_BLOCK_COLOR;
+  // 選択中の最初の要素の色を返す（複数選択時は代表色）
+  const sels = getSelections();
+  if (sels.length === 0) return null;
+  const first = sels[0];
+  if (first.type === 'block') {
+    return (state.blocks.get(first.id) ?? {}).color ?? DEFAULT_BLOCK_COLOR;
   } else {
-    return (state.arrows.get(state.selection.id) ?? {}).color ?? DEFAULT_ARROW_COLOR;
+    return (state.arrows.get(first.id) ?? {}).color ?? DEFAULT_ARROW_COLOR;
   }
 }
 
 /** カラーピッカーを表示してアクティブ色を反映 */
 function updateColorPicker() {
-  if (!state.selection) {
+  const cnt = state.selections.size;
+  if (cnt === 0) {
     colorPicker.classList.remove('show');
     return;
   }
@@ -1922,20 +1922,22 @@ function updateColorPicker() {
   });
 }
 
-// スウォッチクリック → 色を適用
+// スウォッチクリック → 選択中の全要素に色を適用
 colorPicker.addEventListener('click', e => {
   const sw = e.target.closest('.cp-swatch');
-  if (!sw || !state.selection) return;
+  if (!sw || state.selections.size === 0) return;
 
   const hex = sw.dataset.color;
   pushHistory();
 
-  if (state.selection.type === 'block') {
-    const b = state.blocks.get(state.selection.id);
-    if (b) b.color = hex;
-  } else {
-    const a = state.arrows.get(state.selection.id);
-    if (a) a.color = hex;
+  for (const { type, id } of getSelections()) {
+    if (type === 'block') {
+      const b = state.blocks.get(id);
+      if (b) b.color = hex;
+    } else {
+      const a = state.arrows.get(id);
+      if (a) a.color = hex;
+    }
   }
   render();
   updateColorPicker();
