@@ -1226,10 +1226,6 @@ function updateAlignButtons() {
   document.getElementById('btn-align-top').classList.toggle('active', cur === 'top');
   document.getElementById('btn-align-mid').classList.toggle('active', cur === 'middle');
   document.getElementById('btn-align-bot').classList.toggle('active', cur === 'bottom');
-  // 文字色スウォッチを選択ブロックの色に同期
-  const tc = first?.textColor || '#1a202c';
-  document.getElementById('text-color-swatch').style.background = tc;
-  document.getElementById('text-color-input').value = tc;
 }
 
 // --- マウス状態 ---
