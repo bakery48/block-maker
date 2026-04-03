@@ -639,8 +639,132 @@ function svgPoint(e) {
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
-// 動作確認
-showStatus('ステップ3完了: ジオメトリ関数OK ✔');
+// ============================================================
+// ステップ4: ブロック描画
+// ============================================================
+
+const layerBlocks  = document.getElementById('layer-blocks');
+const layerArrows  = document.getElementById('layer-arrows');
+const layerOverlay = document.getElementById('layer-overlay');
+
+/** SVG名前空間付きで要素を作成し、attrs をセットして parent に追加 */
+function mkEl(tag, attrs = {}, parent = null) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (parent) parent.appendChild(el);
+  return el;
+}
+
+/** テキストを複数行で SVG に描画する（<tspan> で折り返し） */
+function renderBlockText(g, block) {
+  const lines  = block.text.split('\n');
+  const lh     = 18;
+  const cx     = block.x + block.w / 2;
+  const totalH = lines.length * lh;
+  const startY = block.y + block.h / 2 - totalH / 2 + lh / 2;
+
+  const txt = mkEl('text', {
+    'font-size'  : '13',
+    'font-family': 'Segoe UI, Yu Gothic UI, sans-serif',
+    'text-anchor': 'middle',
+    fill         : '#e2e8f0',
+    'pointer-events': 'none',
+    'user-select'   : 'none',
+  }, g);
+
+  lines.forEach((line, i) => {
+    const ts = mkEl('tspan', { x: cx, y: startY + i * lh }, txt);
+    ts.textContent = line;
+  });
+}
+
+/** ブロック1つを SVG で描画する */
+function renderBlock(block) {
+  const sel = state.selection?.type === 'block' && state.selection.id === block.id;
+  const { x, y, w, h } = block;
+
+  const g = mkEl('g', { 'data-bid': block.id }, layerBlocks);
+
+  // --- ドロップシャドウ ---
+  mkEl('rect', {
+    x: x + 3, y: y + 4, width: w, height: h,
+    rx: 7, ry: 7,
+    fill: 'rgba(0,0,0,0.35)',
+  }, g);
+
+  // --- 本体 ---
+  const fillColor   = sel ? '#2c5282' : '#2a3f5f';
+  const strokeColor = sel ? '#63b3ed' : '#4a6fa5';
+  const strokeW     = sel ? 2.5 : 1.5;
+
+  mkEl('rect', {
+    x, y, width: w, height: h,
+    rx: 7, ry: 7,
+    fill  : fillColor,
+    stroke: strokeColor,
+    'stroke-width': strokeW,
+  }, g);
+
+  // --- テキスト ---
+  renderBlockText(g, block);
+
+  // --- 選択中: リサイズハンドル ---
+  if (sel) {
+    for (const h of resizeHandles(block)) {
+      mkEl('rect', {
+        x: h.x - HANDLE_R, y: h.y - HANDLE_R,
+        width: HANDLE_R * 2, height: HANDLE_R * 2,
+        rx: 2, ry: 2,
+        fill  : '#63b3ed',
+        stroke: '#2d3748',
+        'stroke-width': 1,
+        'data-dir': h.dir,
+        cursor: dirToCursor(h.dir),
+      }, layerOverlay);
+    }
+  }
+}
+
+/** compass方向 → CSS cursor */
+function dirToCursor(dir) {
+  const map = {
+    n: 'n-resize', ne: 'ne-resize', e: 'e-resize', se: 'se-resize',
+    s: 's-resize', sw: 'sw-resize', w: 'w-resize', nw: 'nw-resize',
+  };
+  return map[dir] ?? 'default';
+}
+
+/** 全ブロックを再描画（layerBlocks + layerOverlay はクリアして再構築） */
+function renderAllBlocks() {
+  layerBlocks.innerHTML  = '';
+  // overlayはarrow描画後にまとめてクリアするので、ここでは触らない
+  for (const block of state.blocks.values()) renderBlock(block);
+}
+
+/** 全体を再描画するメイン関数（ステップ6以降で拡張） */
+function render() {
+  layerBlocks.innerHTML  = '';
+  layerArrows.innerHTML  = '';
+  layerOverlay.innerHTML = '';
+  for (const block of state.blocks.values()) renderBlock(block);
+  // 矢印はステップ6で追加
+  renderOverlay();
+}
+
+/** オーバーレイ（描画中プレビュー等）— ステップ6以降で拡張 */
+function renderOverlay() {
+  // ステップ4ではブロックのリサイズハンドルは renderBlock 内で描画済み
+  // 矢印・描画プレビューはステップ6以降
+}
+
+// --- 動作確認用サンプルデータ ---
+(function initSample() {
+  const id1 = createBlock(100, 100, 160, 60, 'フロントエンド');
+  const id2 = createBlock(340, 100, 160, 60, 'バックエンド');
+  const id3 = createBlock(220, 240, 160, 60, 'データベース');
+  render();
+  showStatus('ステップ4完了: ブロック描画OK ✔');
+})();
 </script>
 </body>
 </html>
