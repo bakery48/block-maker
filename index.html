@@ -2275,7 +2275,6 @@ function exportPNG() {
     a.download = 'block-diagram.png';
     a.href = canvas.toDataURL('image/png');
     a.click();
-    showStatus('📷 PNGを保存しました');
   };
   img.onerror = () => {
     URL.revokeObjectURL(url);
