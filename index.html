@@ -2253,14 +2253,7 @@ function exportPNG() {
   // マーカー定義をコピー（矢印ヘッドに必要）
   tmpSvg.appendChild(document.getElementById('svg-defs').cloneNode(true));
 
-  // 背景（state.bgColor で半透明フィルが正しく見えるようにする）
-  const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-  bgRect.setAttribute('x', vx); bgRect.setAttribute('y', vy);
-  bgRect.setAttribute('width', vw); bgRect.setAttribute('height', vh);
-  bgRect.setAttribute('fill', state.bgColor);
-  tmpSvg.appendChild(bgRect);
-
-  // グループ枠・矢印・ブロックをコピー
+  // グループ枠・矢印・ブロックをコピー（背景なし＝透過）
   for (const layerId of ['layer-groups', 'layer-arrows', 'layer-blocks']) {
     tmpSvg.appendChild(document.getElementById(layerId).cloneNode(true));
   }
@@ -2275,8 +2268,6 @@ function exportPNG() {
     canvas.width  = vw;
     canvas.height = vh;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = state.bgColor;
-    ctx.fillRect(0, 0, vw, vh);
     ctx.drawImage(img, 0, 0, vw, vh);
     URL.revokeObjectURL(url);
 
