@@ -727,6 +727,16 @@ function hitSegmentMid(arrow, px, py) {
   return null;
 }
 
+/** 端点ハンドルへのヒット: 'start' | 'end' | null */
+function hitEndpointHandle(arrow, px, py) {
+  const pts = arrowPoints(arrow);
+  const sp  = pts[0];
+  const ep  = pts[pts.length - 1];
+  if (dist2(px, py, sp.x, sp.y) <= HANDLE_R + 4) return 'start';
+  if (dist2(px, py, ep.x, ep.y) <= HANDLE_R + 4) return 'end';
+  return null;
+}
+
 // --- SVG座標取得 ---
 const svgEl = document.getElementById('canvas');
 function svgPoint(e) {
@@ -920,7 +930,24 @@ function onSelectDown(x, y) {
     }
   }
 
-  // 2. 選択中矢印のウェイポイントハンドルを優先チェック
+  // 2. 選択中矢印のハンドルを優先チェック（端点 → ウェイポイント → セグメント中点）
+  if (state.selection?.type === 'arrow') {
+    const arrow = state.arrows.get(state.selection.id);
+    if (arrow) {
+      // 端点ハンドル（始点・終点の移動・再接続）
+      const which = hitEndpointHandle(arrow, x, y);
+      if (which !== null) {
+        state.drag = {
+          type    : 'ep-move',
+          id      : arrow.id,
+          which,                        // 'start' | 'end'
+          snap    : null,               // 現在のスナップ候補
+        };
+        return;
+      }
+    }
+  }
+
   if (state.selection?.type === 'arrow') {
     const arrow = state.arrows.get(state.selection.id);
     if (arrow) {
@@ -998,12 +1025,20 @@ function onDragMove(x, y) {
     render();
 
   } else if (d.type === 'wp-move') {
-    // ウェイポイントをマウス位置に追従
     const arrow = state.arrows.get(d.id);
-    if (arrow) {
-      arrow.waypoints[d.idx] = { x, y };
-      render();
-    }
+    if (arrow) { arrow.waypoints[d.idx] = { x, y }; render(); }
+
+  } else if (d.type === 'ep-move') {
+    const arrow = state.arrows.get(d.id);
+    if (!arrow) return;
+    // スナップ検索（反対側の端点が接続しているブロックも候補に含める）
+    d.snap = findSnap(x, y);
+    // 端点をマウス位置に仮更新（リアルタイムプレビュー）
+    const ep = d.snap
+      ? makeSnapEndpoint(d.snap.blockId, d.snap.side, d.snap.t, d.snap.x, d.snap.y)
+      : makeFreeEndpoint(x, y);
+    arrow[d.which] = ep;
+    render();
   }
 }
 
@@ -1207,16 +1242,28 @@ function renderArrow(arrow) {
 
   // --- 選択中: ハンドル類 ---
   if (sel) {
+    // 端点ハンドル（始点・終点をドラッグで移動・再接続）
+    const sp  = pts[0];
+    const ep2 = pts[pts.length - 1];
+    [['start', sp], ['end', ep2]].forEach(([which, pt]) => {
+      const dragging = state.drag?.type === 'ep-move' && state.drag.which === which;
+      mkEl('circle', {
+        cx: pt.x, cy: pt.y, r: HANDLE_R + 2,
+        fill          : dragging ? '#4299e1' : '#1a202c',
+        stroke        : '#f6ad55',
+        'stroke-width': 2,
+        cursor        : 'move',
+        'data-ep'     : which,
+        'data-aid'    : arrow.id,
+      }, layerOverlay);
+    });
+
     // ウェイポイントハンドル（ドラッグで折れ点移動）
     arrow.waypoints.forEach((wp, i) => {
       mkEl('circle', {
         cx: wp.x, cy: wp.y, r: HANDLE_R,
-        fill           : '#2d3748',
-        stroke         : '#63b3ed',
-        'stroke-width' : 1.5,
-        cursor         : 'move',
-        'data-wp'      : i,
-        'data-aid'     : arrow.id,
+        fill: '#2d3748', stroke: '#63b3ed', 'stroke-width': 1.5,
+        cursor: 'move', 'data-wp': i, 'data-aid': arrow.id,
       }, layerOverlay);
     });
 
@@ -1226,11 +1273,8 @@ function renderArrow(arrow) {
       const my = (pts[i].y + pts[i+1].y) / 2;
       mkEl('circle', {
         cx: mx, cy: my, r: HANDLE_R - 2,
-        fill           : '#4299e1',
-        opacity        : '0.6',
-        cursor         : 'crosshair',
-        'data-seg'     : i,
-        'data-aid'     : arrow.id,
+        fill: '#4299e1', opacity: '0.6', cursor: 'crosshair',
+        'data-seg': i, 'data-aid': arrow.id,
       }, layerOverlay);
     }
   }
@@ -1405,6 +1449,11 @@ function renderOverlay() {
   const hs = state._hoverSnap;
   if (state.tool === 'arrow' && !state.drawing && hs) {
     renderSnapIndicator(hs.x, hs.y);
+  }
+
+  // --- 端点ドラッグ中のスナップインジケータ ---
+  if (state.drag?.type === 'ep-move' && state.drag.snap) {
+    renderSnapIndicator(state.drag.snap.x, state.drag.snap.y);
   }
 
   // --- 矢印描画中プレビュー ---
