@@ -241,6 +241,9 @@
   <button class="tb-btn" id="btn-load" title="読込">
     <span class="icon">📂</span><span class="label">読込</span>
   </button>
+  <button class="tb-btn" id="btn-png" title="PNG出力">
+    <span class="icon">📷</span><span class="label">PNG</span>
+  </button>
   <button class="tb-btn danger" id="btn-clear" title="クリア">
     <span class="icon">🗑</span><span class="label">クリア</span>
   </button>
@@ -1955,6 +1958,45 @@ fileInput.addEventListener('change', () => {
   };
   reader.readAsText(file);
 });
+
+// --- PNG出力 ---
+function exportPNG() {
+  const rect = svgEl.getBoundingClientRect();
+  const W = Math.round(rect.width);
+  const H = Math.round(rect.height);
+
+  // SVGをシリアライズして明示的な width/height を付与
+  const clone = svgEl.cloneNode(true);
+  clone.setAttribute('width',  W);
+  clone.setAttribute('height', H);
+  clone.setAttribute('xmlns',  'http://www.w3.org/2000/svg');
+
+  const svgStr  = new XMLSerializer().serializeToString(clone);
+  const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url     = URL.createObjectURL(svgBlob);
+
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width  = W;
+    canvas.height = H;
+    canvas.getContext('2d').drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+
+    const a = document.createElement('a');
+    a.download = 'block-diagram.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+    showStatus('📷 PNGを保存しました');
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    showStatus('❌ PNG出力に失敗しました', 4000);
+  };
+  img.src = url;
+}
+
+document.getElementById('btn-png').addEventListener('click', exportPNG);
 
 // --- クリア ---
 document.getElementById('btn-clear').addEventListener('click', () => {
