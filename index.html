@@ -1013,14 +1013,148 @@ document.getElementById('ctx-delete').addEventListener('click', () => {
 });
 
 // ============================================================
-// 初期サンプル描画
+// ステップ6: 矢印描画
+// ============================================================
+
+/**
+ * 矢印1本を layerArrows に描画する
+ * ・ポリライン（始点→中間折れ点→終点）
+ * ・終点に矢印ヘッド
+ * ・ラベル（矢印中間点の上）
+ * ・選択中: ウェイポイントハンドル + セグメント中点ハンドル
+ */
+function renderArrow(arrow) {
+  const sel = state.selection?.type === 'arrow' && state.selection.id === arrow.id;
+  const pts = arrowPoints(arrow);
+  if (pts.length < 2) return;
+
+  const color      = sel ? '#63b3ed' : '#718096';
+  const strokeW    = sel ? 2.5 : 2;
+  const markerId   = sel ? 'ah-selected' : 'ah-normal';
+
+  // --- パス文字列生成 ---
+  const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+
+  // --- ヒット用透明太線（クリックしやすくする） ---
+  mkEl('path', {
+    d,
+    stroke         : 'transparent',
+    'stroke-width' : 14,
+    fill           : 'none',
+    'data-aid'     : arrow.id,
+    cursor         : 'pointer',
+  }, layerArrows);
+
+  // --- 見た目の線 ---
+  mkEl('path', {
+    d,
+    stroke         : color,
+    'stroke-width' : strokeW,
+    fill           : 'none',
+    'marker-end'   : `url(#${markerId})`,
+    'pointer-events': 'none',
+  }, layerArrows);
+
+  // --- ラベル ---
+  if (arrow.label) {
+    const mid    = arrowMidpoint(arrow);
+    const labelW = Math.max(40, arrow.label.length * 8 + 12);
+    const lx     = mid.x - labelW / 2;
+    const ly     = mid.y - 22;
+
+    // 背景
+    mkEl('rect', {
+      x: lx, y: ly, width: labelW, height: 17,
+      rx: 3, ry: 3,
+      fill   : '#1e2533',
+      opacity: '0.85',
+      'pointer-events': 'none',
+    }, layerArrows);
+
+    // テキスト
+    const lt = mkEl('text', {
+      x              : mid.x,
+      y              : ly + 12,
+      'text-anchor'  : 'middle',
+      'font-size'    : '12',
+      'font-family'  : 'Segoe UI, Yu Gothic UI, sans-serif',
+      fill           : sel ? '#63b3ed' : '#a0aec0',
+      'pointer-events': 'none',
+    }, layerArrows);
+    lt.textContent = arrow.label;
+  }
+
+  // --- 選択中: ハンドル類 ---
+  if (sel) {
+    // ウェイポイントハンドル（ドラッグで折れ点移動）
+    arrow.waypoints.forEach((wp, i) => {
+      mkEl('circle', {
+        cx: wp.x, cy: wp.y, r: HANDLE_R,
+        fill           : '#2d3748',
+        stroke         : '#63b3ed',
+        'stroke-width' : 1.5,
+        cursor         : 'move',
+        'data-wp'      : i,
+        'data-aid'     : arrow.id,
+      }, layerOverlay);
+    });
+
+    // セグメント中点ハンドル（クリックで折れ点追加）
+    for (let i = 0; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i+1].x) / 2;
+      const my = (pts[i].y + pts[i+1].y) / 2;
+      mkEl('circle', {
+        cx: mx, cy: my, r: HANDLE_R - 2,
+        fill           : '#4299e1',
+        opacity        : '0.6',
+        cursor         : 'crosshair',
+        'data-seg'     : i,
+        'data-aid'     : arrow.id,
+      }, layerOverlay);
+    }
+  }
+}
+
+/** render() に矢印描画を組み込む（ステップ4のrenderを上書き） */
+function render() {
+  layerBlocks.innerHTML  = '';
+  layerArrows.innerHTML  = '';
+  layerOverlay.innerHTML = '';
+
+  // 矢印（ブロックの下に描画）
+  for (const arrow of state.arrows.values()) renderArrow(arrow);
+
+  // ブロック（矢印の上に描画）
+  for (const block of state.blocks.values()) renderBlock(block);
+
+  // オーバーレイ（ハンドル・プレビュー）
+  renderOverlay();
+}
+
+// ============================================================
+// 初期サンプル描画（矢印付き）
 // ============================================================
 (function initSample() {
-  createBlock(100, 120, 160, 60, 'フロントエンド');
-  createBlock(360, 120, 160, 60, 'バックエンド');
-  createBlock(230, 270, 160, 60, 'データベース');
+  const b1 = createBlock(100, 130, 160, 60, 'フロントエンド');
+  const b2 = createBlock(370, 130, 160, 60, 'バックエンド');
+  const b3 = createBlock(235, 280, 160, 60, 'データベース');
+
+  // ブロック間の矢印（右辺 → 左辺）
+  createArrow(
+    makeSnapEndpoint(b1, 'right', 0.5, 0, 0),
+    makeSnapEndpoint(b2, 'left',  0.5, 0, 0),
+    [],
+    'API リクエスト'
+  );
+  createArrow(
+    makeSnapEndpoint(b2, 'bottom', 0.5, 0, 0),
+    makeSnapEndpoint(b3, 'right',  0.3, 0, 0),
+    [],
+    'SQL'
+  );
+
   render();
-  showStatus('ステップ5完了: ブロック操作OK ✔  (V=選択  B=ブロック  A=矢印  Del=削除)');
+  showStatus('ステップ6完了: 矢印描画OK ✔');
 })();
 </script>
 </body>
