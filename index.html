@@ -968,7 +968,8 @@ function onDragEnd(x, y) {
     setSelection('block', id);
     setTool('select');
     render();
-    // 作成直後にテキスト編集を開始（ステップ9で実装）
+    // 作成直後にテキスト編集を開始
+    requestAnimationFrame(() => openEditor('block', id));
   }
 }
 
@@ -1381,8 +1382,159 @@ function renderSnapIndicator(x, y) {
   );
 
   render();
-  showStatus('ステップ8完了: 矢印曲げOK ✔  矢印選択→青丸ドラッグで折れ点移動 / 小丸クリックで追加 / 青丸ダブルクリックで削除');
+  showStatus('ステップ9完了: テキスト編集OK ✔  ダブルクリック or F2 でテキスト/ラベル編集');
 })();
+
+// ============================================================
+// ステップ9: テキスト編集・矢印ラベル
+// ============================================================
+
+const textEditor = document.getElementById('text-editor');
+let _editing = null; // { type:'block'|'arrow', id }
+
+/** テキストエディタを開く */
+function openEditor(type, id) {
+  if (_editing) closeEditor(false); // 前の編集を確定して閉じる
+
+  const svgRect = svgEl.getBoundingClientRect();
+
+  if (type === 'block') {
+    const b = state.blocks.get(id);
+    if (!b) return;
+
+    _editing = { type, id };
+    textEditor.value = b.text;
+
+    // ブロックと同じ位置・サイズに配置
+    textEditor.style.left      = (svgRect.left + b.x) + 'px';
+    textEditor.style.top       = (svgRect.top  + b.y) + 'px';
+    textEditor.style.width     = b.w + 'px';
+    textEditor.style.height    = b.h + 'px';
+    textEditor.style.fontSize  = '13px';
+    textEditor.style.textAlign = 'center';
+    // 縦中央揃えは padding-top で近似
+    textEditor.style.paddingTop = Math.max(4, (b.h - 22) / 2) + 'px';
+
+  } else if (type === 'arrow') {
+    const arrow = state.arrows.get(id);
+    if (!arrow) return;
+
+    _editing = { type, id };
+    const mid = arrowMidpoint(arrow);
+
+    textEditor.value = arrow.label ?? '';
+    textEditor.style.width     = '140px';
+    textEditor.style.height    = '28px';
+    textEditor.style.fontSize  = '12px';
+    textEditor.style.textAlign = 'center';
+    textEditor.style.paddingTop = '4px';
+    // 中間点の上に配置
+    textEditor.style.left = (svgRect.left + mid.x - 70) + 'px';
+    textEditor.style.top  = (svgRect.top  + mid.y - 36) + 'px';
+  }
+
+  textEditor.style.display = 'block';
+  // 次フレームでフォーカス（レイアウト確定後）
+  requestAnimationFrame(() => { textEditor.focus(); textEditor.select(); });
+}
+
+/** テキストエディタを閉じる（confirm=true で値を反映） */
+function closeEditor(confirm = true) {
+  if (!_editing) return;
+  const { type, id } = _editing;
+  _editing = null;
+  textEditor.style.display = 'none';
+
+  if (!confirm) return;
+
+  if (type === 'block') {
+    const b = state.blocks.get(id);
+    if (b) b.text = textEditor.value || 'コンポーネント';
+  } else if (type === 'arrow') {
+    const arrow = state.arrows.get(id);
+    if (arrow) arrow.label = textEditor.value;
+  }
+  render();
+}
+
+// --- テキストエディタのイベント ---
+textEditor.addEventListener('blur', () => closeEditor(true));
+
+textEditor.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeEditor(false);
+    render();
+    return;
+  }
+  // ブロック編集: Shift+Enter で改行、Enter だけは確定
+  if (_editing?.type === 'block') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      closeEditor(true);
+    }
+  } else {
+    // 矢印ラベル: Enter で確定
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      closeEditor(true);
+    }
+  }
+  // 自動リサイズ（高さをコンテンツに合わせる）
+  requestAnimationFrame(() => {
+    if (_editing?.type === 'block') return; // ブロックはサイズ固定
+    textEditor.style.height = 'auto';
+    textEditor.style.height = textEditor.scrollHeight + 'px';
+  });
+});
+
+// --- dblclick 拡張: ブロック/矢印のテキスト編集を開く ---
+// （ステップ8の dblclick ハンドラに追記する形で上書き）
+svgEl.addEventListener('dblclick', e => {
+  // 矢印ツール描画中は既存ハンドラが処理（ステップ7のcaptureが先に走る）
+  if (state.tool === 'arrow' && state.drawing) return;
+  // ウェイポイント削除は既存ハンドラが処理済み
+
+  if (state.tool !== 'select') return;
+
+  const { x, y } = svgPoint(e);
+
+  // ウェイポイント削除との重複を避けるため先にチェック
+  if (state.selection?.type === 'arrow') {
+    const arrow = state.arrows.get(state.selection.id);
+    if (arrow && hitWaypointHandle(arrow, x, y) !== null) return; // 削除ハンドラに任せる
+  }
+
+  const hit = hitTest(x, y);
+  if (!hit) return;
+
+  setSelection(hit.type, hit.id);
+  render();
+  openEditor(hit.type, hit.id);
+});
+
+// --- コンテキストメニューからの編集 ---
+document.getElementById('ctx-edit').addEventListener('click', () => {
+  hideCtxMenu();
+  if (state.selection) openEditor(state.selection.type, state.selection.id);
+});
+document.getElementById('ctx-label').addEventListener('click', () => {
+  hideCtxMenu();
+  if (state.selection?.type === 'arrow') openEditor('arrow', state.selection.id);
+});
+
+// --- ブロック作成直後に自動でエディタを開く ---
+// onDragEnd の create 分岐に hook
+const _origOnDragEnd = onDragEnd;
+// ※ onDragEnd は下で再定義せず、createBlock の後に openEditor を呼ぶ形に修正済み
+// （createBlock後に setTool('select')→render()→openEditor() の順で呼ぶ）
+
+// キーボード: F2 でその場編集
+document.addEventListener('keydown', e => {
+  if (e.key === 'F2' && state.selection && !_editing) {
+    openEditor(state.selection.type, state.selection.id);
+  }
+});
 </script>
 </body>
 </html>
