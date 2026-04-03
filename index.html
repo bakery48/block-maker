@@ -1549,16 +1549,28 @@ function renderArrow(arrow) {
 
   // --- ラベル ---
   if (arrow.label) {
-    const mid    = arrowMidpoint(arrow);
-    const labelW = Math.max(40, arrow.label.length * 8 + 12);
-    const lx     = mid.x - labelW / 2;
-    const ly     = mid.y - 22;
+    const mid = arrowMidpoint(arrow);
 
-    // テキスト
+    // midpoint が属するセグメントの向きを求め、垂直方向にオフセット
+    let segDx = 1, segDy = 0;
+    { let rem = 0;
+      for (let i = 0; i < pts.length - 1; i++) rem += dist2(pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y);
+      rem /= 2;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const d = dist2(pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y);
+        if (rem <= d + 1e-9) { segDx = pts[i+1].x - pts[i].x; segDy = pts[i+1].y - pts[i].y; break; }
+        rem -= d;
+      }
+    }
+    const isHSeg = Math.abs(segDx) >= Math.abs(segDy);
+    const OFFSET = 10;
+    const tx = isHSeg ? mid.x          : mid.x + OFFSET;
+    const ty = isHSeg ? mid.y - OFFSET : mid.y + 4;
+
     const lt = mkEl('text', {
-      x              : mid.x,
-      y              : ly + 12,
-      'text-anchor'  : 'middle',
+      x              : tx,
+      y              : ty,
+      'text-anchor'  : isHSeg ? 'middle' : 'start',
       'font-size'    : '12',
       'font-family'  : 'Segoe UI, Yu Gothic UI, sans-serif',
       fill           : baseColor,
