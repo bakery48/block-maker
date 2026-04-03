@@ -1240,6 +1240,9 @@ svgEl.addEventListener('mousedown', e => {
   downPos = svgPoint(e);
   const { x, y } = downPos;
 
+  // e.preventDefault() により textarea の blur が発火しないことがあるので明示的に閉じる
+  if (_editing) closeEditor(true);
+
   hideCtxMenu();
 
   if (state.tool === 'select') onSelectDown(x, y, e.ctrlKey || e.metaKey);
