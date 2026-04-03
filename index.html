@@ -757,13 +757,270 @@ function renderOverlay() {
   // 矢印・描画プレビューはステップ6以降
 }
 
-// --- 動作確認用サンプルデータ ---
-(function initSample() {
-  const id1 = createBlock(100, 100, 160, 60, 'フロントエンド');
-  const id2 = createBlock(340, 100, 160, 60, 'バックエンド');
-  const id3 = createBlock(220, 240, 160, 60, 'データベース');
+// ============================================================
+// ステップ5: ブロック操作（新規作成・移動・リサイズ）
+// ============================================================
+
+// --- ツール切り替え ---
+function setTool(name) {
+  state.tool    = name;
+  state.drawing = null;
+  ['select','block','arrow'].forEach(t => {
+    document.getElementById('btn-' + t).classList.toggle('active', t === name);
+  });
+  svgEl.style.cursor = name === 'select' ? 'default' : 'crosshair';
   render();
-  showStatus('ステップ4完了: ブロック描画OK ✔');
+}
+
+document.getElementById('btn-select').addEventListener('click', () => setTool('select'));
+document.getElementById('btn-block' ).addEventListener('click', () => setTool('block'));
+document.getElementById('btn-arrow' ).addEventListener('click', () => setTool('arrow'));
+document.getElementById('btn-delete').addEventListener('click', () => { deleteSelected(); render(); });
+
+// --- マウス状態 ---
+let isDown    = false;
+let downPos   = { x: 0, y: 0 };  // mousedown 時の座標
+
+// --- mousedown ---
+svgEl.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  isDown  = true;
+  downPos = svgPoint(e);
+  const { x, y } = downPos;
+
+  hideCtxMenu();
+
+  if (state.tool === 'select') onSelectDown(x, y);
+  if (state.tool === 'block')  onBlockDown(x, y);
+  // arrow は mousedown ではなく click で処理（ステップ7）
+});
+
+// --- mousemove ---
+svgEl.addEventListener('mousemove', e => {
+  const { x, y } = svgPoint(e);
+  if (!isDown) return;
+  onDragMove(x, y);
+});
+
+// --- mouseup ---
+svgEl.addEventListener('mouseup', e => {
+  if (e.button !== 0) return;
+  const { x, y } = svgPoint(e);
+  onDragEnd(x, y);
+  isDown = false;
+});
+
+// マウスがSVG外に出た場合もドラッグ終了
+svgEl.addEventListener('mouseleave', e => {
+  if (isDown) { onDragEnd(svgPoint(e).x, svgPoint(e).y); isDown = false; }
+});
+
+// ============================================================
+// 選択ツール: mousedown
+// ============================================================
+function onSelectDown(x, y) {
+  // 1. 選択中ブロックのリサイズハンドルを優先チェック
+  if (state.selection?.type === 'block') {
+    const block = state.blocks.get(state.selection.id);
+    if (block) {
+      const h = hitResizeHandle(block, x, y);
+      if (h) {
+        state.drag = {
+          type: 'resize',
+          id  : block.id,
+          dir : h.dir,
+          ox: block.x, oy: block.y, ow: block.w, oh: block.h,
+          mx: x, my: y,
+        };
+        return;
+      }
+    }
+  }
+
+  // 2. ヒットテスト
+  const hit = hitTest(x, y);
+  if (hit) {
+    setSelection(hit.type, hit.id);
+    if (hit.type === 'block') {
+      const b = state.blocks.get(hit.id);
+      state.drag = {
+        type: 'move',
+        id  : hit.id,
+        ox  : b.x, oy: b.y,
+        mx  : x,   my: y,
+      };
+    }
+    render();
+  } else {
+    clearSelection();
+    render();
+  }
+}
+
+// ============================================================
+// ブロックツール: mousedown → ドラッグで新規作成
+// ============================================================
+function onBlockDown(x, y) {
+  state.drag = { type: 'create', sx: x, sy: y, cx: x, cy: y };
+  render();
+}
+
+// ============================================================
+// ドラッグ中
+// ============================================================
+function onDragMove(x, y) {
+  const d = state.drag;
+  if (!d) return;
+
+  if (d.type === 'move') {
+    const b = state.blocks.get(d.id);
+    if (!b) return;
+    b.x = d.ox + (x - d.mx);
+    b.y = d.oy + (y - d.my);
+    render();
+
+  } else if (d.type === 'resize') {
+    applyResize(d, x, y);
+    render();
+
+  } else if (d.type === 'create') {
+    d.cx = x; d.cy = y;
+    render(); // オーバーレイにプレビュー矩形を描画
+  }
+}
+
+/** リサイズ計算: dir に応じて x/y/w/h を更新 */
+function applyResize(d, mx, my) {
+  const b  = state.blocks.get(d.id);
+  if (!b) return;
+  const dx = mx - d.mx;
+  const dy = my - d.my;
+
+  let { ox, oy, ow, oh } = d;
+  let nx = ox, ny = oy, nw = ow, nh = oh;
+
+  if (d.dir.includes('e')) { nw = Math.max(MIN_W, ow + dx); }
+  if (d.dir.includes('s')) { nh = Math.max(MIN_H, oh + dy); }
+  if (d.dir.includes('w')) {
+    nw = Math.max(MIN_W, ow - dx);
+    nx = ox + ow - nw;
+  }
+  if (d.dir.includes('n')) {
+    nh = Math.max(MIN_H, oh - dy);
+    ny = oy + oh - nh;
+  }
+
+  b.x = nx; b.y = ny; b.w = nw; b.h = nh;
+}
+
+// ============================================================
+// ドラッグ終了
+// ============================================================
+function onDragEnd(x, y) {
+  const d = state.drag;
+  state.drag = null;
+
+  if (!d) return;
+
+  if (d.type === 'create') {
+    // ドラッグ範囲からブロックを作成
+    const bx = Math.min(d.sx, x);
+    const by = Math.min(d.sy, y);
+    const bw = Math.max(MIN_W, Math.abs(x - d.sx));
+    const bh = Math.max(MIN_H, Math.abs(y - d.sy));
+    const id = createBlock(bx, by, bw, bh, 'コンポーネント');
+    setSelection('block', id);
+    setTool('select');
+    render();
+    // 作成直後にテキスト編集を開始（ステップ9で実装）
+  }
+}
+
+// ============================================================
+// renderOverlay: ブロック作成プレビュー矩形
+// ============================================================
+function renderOverlay() {
+  const d = state.drag;
+  if (d?.type === 'create') {
+    const bx = Math.min(d.sx, d.cx);
+    const by = Math.min(d.sy, d.cy);
+    const bw = Math.max(MIN_W, Math.abs(d.cx - d.sx));
+    const bh = Math.max(MIN_H, Math.abs(d.cy - d.sy));
+    mkEl('rect', {
+      x: bx, y: by, width: bw, height: bh,
+      rx: 7, ry: 7,
+      fill           : 'rgba(66,153,225,0.12)',
+      stroke         : '#4299e1',
+      'stroke-width' : 2,
+      'stroke-dasharray': '6 3',
+      'pointer-events'  : 'none',
+    }, layerOverlay);
+  }
+  // 矢印オーバーレイはステップ7以降
+}
+
+// ============================================================
+// キーボードショートカット
+// ============================================================
+document.addEventListener('keydown', e => {
+  if (document.getElementById('text-editor').style.display !== 'none') return;
+  switch (e.key) {
+    case 'v': case 'V': setTool('select'); break;
+    case 'b': case 'B': setTool('block');  break;
+    case 'a': case 'A': setTool('arrow');  break;
+    case 'Delete': case 'Backspace':
+      e.preventDefault();
+      deleteSelected(); render();
+      break;
+    case 'Escape':
+      if (state.drawing) { state.drawing = null; setTool('select'); }
+      else { clearSelection(); render(); }
+      break;
+  }
+});
+
+// ============================================================
+// コンテキストメニュー（基盤）
+// ============================================================
+const ctxMenu = document.getElementById('ctx-menu');
+
+function showCtxMenu(clientX, clientY, type) {
+  document.getElementById('ctx-edit') .style.display = type === 'block' ? '' : 'none';
+  document.getElementById('ctx-label').style.display = type === 'arrow' ? '' : 'none';
+  ctxMenu.style.left    = clientX + 'px';
+  ctxMenu.style.top     = clientY + 'px';
+  ctxMenu.style.display = 'block';
+}
+function hideCtxMenu() { ctxMenu.style.display = 'none'; }
+
+svgEl.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const { x, y } = svgPoint(e);
+  const hit = hitTest(x, y);
+  if (hit) {
+    setSelection(hit.type, hit.id);
+    render();
+    showCtxMenu(e.clientX, e.clientY, hit.type);
+  }
+});
+document.addEventListener('click', e => {
+  if (!ctxMenu.contains(e.target)) hideCtxMenu();
+});
+
+document.getElementById('ctx-delete').addEventListener('click', () => {
+  hideCtxMenu(); deleteSelected(); render();
+});
+
+// ============================================================
+// 初期サンプル描画
+// ============================================================
+(function initSample() {
+  createBlock(100, 120, 160, 60, 'フロントエンド');
+  createBlock(360, 120, 160, 60, 'バックエンド');
+  createBlock(230, 270, 160, 60, 'データベース');
+  render();
+  showStatus('ステップ5完了: ブロック操作OK ✔  (V=選択  B=ブロック  A=矢印  Del=削除)');
 })();
 </script>
 </body>
