@@ -234,6 +234,19 @@
 
   <div class="tb-sep"></div>
 
+  <!-- テキスト縦位置 -->
+  <button class="tb-btn" id="btn-align-top" title="テキスト上揃え">
+    <span class="icon">⬆</span><span class="label">上</span>
+  </button>
+  <button class="tb-btn" id="btn-align-mid" title="テキスト中央揃え">
+    <span class="icon">⬛</span><span class="label">中</span>
+  </button>
+  <button class="tb-btn" id="btn-align-bot" title="テキスト下揃え">
+    <span class="icon">⬇</span><span class="label">下</span>
+  </button>
+
+  <div class="tb-sep"></div>
+
   <!-- ファイル -->
   <button class="tb-btn" id="btn-save" title="保存 (Ctrl+S)">
     <span class="icon">💾</span><span class="label">保存</span>
@@ -1029,13 +1042,17 @@ function renderBlockText(g, block) {
   const lh     = 18;
   const cx     = block.x + block.w / 2;
   const totalH = lines.length * lh;
-  const startY = block.y + block.h / 2 - totalH / 2 + lh / 2;
+  const PAD    = 8;
+  const vAlign = block.textVAlign || 'middle';
+  const startY = vAlign === 'top'    ? block.y + PAD + lh * 0.8
+               : vAlign === 'bottom' ? block.y + block.h - PAD - totalH + lh * 0.8
+               :                       block.y + block.h / 2 - totalH / 2 + lh / 2;
 
   const txt = mkEl('text', {
     'font-size'  : '13',
     'font-family': 'Segoe UI, Yu Gothic UI, sans-serif',
     'text-anchor': 'middle',
-    fill         : isLightBg() ? '#1a202c' : '#e2e8f0',
+    fill         : '#1a202c',
     'pointer-events': 'none',
     'user-select'   : 'none',
   }, g);
@@ -1055,11 +1072,10 @@ function renderBlock(block) {
 
   const color = block.color || DEFAULT_BLOCK_COLOR;
 
-  // --- 本体（角なし） ---
-  const light = isLightBg();
+  // --- 本体（白固定・角なし） ---
   mkEl('rect', {
     x, y, width: w, height: h,
-    fill          : sel ? color + (light ? '55' : '40') : color + (light ? '33' : '22'),
+    fill          : '#ffffff',
     stroke        : color,
     'stroke-width': sel ? 2.5 : 1.5,
   }, g);
@@ -1129,6 +1145,29 @@ document.getElementById('btn-arrow' ).addEventListener('click', () => setTool('a
 document.getElementById('btn-delete') .addEventListener('click', () => { deleteSelected(); render(); });
 document.getElementById('btn-group')  .addEventListener('click', groupSelected);
 document.getElementById('btn-ungroup').addEventListener('click', ungroupSelected);
+
+// --- テキスト縦位置 ---
+function setBlockTextVAlign(vAlign) {
+  const sels = getSelections().filter(s => s.type === 'block');
+  if (sels.length === 0) return;
+  pushHistory();
+  for (const { id } of sels) {
+    const b = state.blocks.get(id);
+    if (b) b.textVAlign = vAlign;
+  }
+  render();
+}
+document.getElementById('btn-align-top').addEventListener('click', () => setBlockTextVAlign('top'));
+document.getElementById('btn-align-mid').addEventListener('click', () => setBlockTextVAlign('middle'));
+document.getElementById('btn-align-bot').addEventListener('click', () => setBlockTextVAlign('bottom'));
+
+function updateAlignButtons() {
+  const sels = getSelections().filter(s => s.type === 'block');
+  const cur  = sels.length > 0 ? (state.blocks.get(sels[0].id)?.textVAlign || 'middle') : null;
+  document.getElementById('btn-align-top').classList.toggle('active', cur === 'top');
+  document.getElementById('btn-align-mid').classList.toggle('active', cur === 'middle');
+  document.getElementById('btn-align-bot').classList.toggle('active', cur === 'bottom');
+}
 
 // --- マウス状態 ---
 let isDown    = false;
@@ -1675,6 +1714,7 @@ function render() {
   renderOverlay();
   // カラーピッカーの表示更新
   if (typeof updateColorPicker === 'function') updateColorPicker();
+  if (typeof updateAlignButtons === 'function') updateAlignButtons();
 }
 
 // ============================================================
