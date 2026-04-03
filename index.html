@@ -1362,28 +1362,6 @@ function renderSnapIndicator(x, y) {
     fill: '#4299e1', 'pointer-events': 'none' }, layerOverlay);
 }
 
-// ============================================================
-// 初期サンプル描画
-// ============================================================
-(function initSample() {
-  const b1 = createBlock(100, 130, 160, 60, 'フロントエンド');
-  const b2 = createBlock(370, 130, 160, 60, 'バックエンド');
-  const b3 = createBlock(235, 290, 160, 60, 'データベース');
-
-  createArrow(
-    makeSnapEndpoint(b1, 'right',  0.5, 0, 0),
-    makeSnapEndpoint(b2, 'left',   0.5, 0, 0),
-    [], 'API リクエスト'
-  );
-  createArrow(
-    makeSnapEndpoint(b2, 'bottom', 0.5, 0, 0),
-    makeSnapEndpoint(b3, 'right',  0.3, 0, 0),
-    [], 'SQL'
-  );
-
-  render();
-  showStatus('ステップ9完了: テキスト編集OK ✔  ダブルクリック or F2 でテキスト/ラベル編集');
-})();
 
 // ============================================================
 // ステップ9: テキスト編集・矢印ラベル
@@ -1523,18 +1501,196 @@ document.getElementById('ctx-label').addEventListener('click', () => {
   if (state.selection?.type === 'arrow') openEditor('arrow', state.selection.id);
 });
 
-// --- ブロック作成直後に自動でエディタを開く ---
-// onDragEnd の create 分岐に hook
-const _origOnDragEnd = onDragEnd;
-// ※ onDragEnd は下で再定義せず、createBlock の後に openEditor を呼ぶ形に修正済み
-// （createBlock後に setTool('select')→render()→openEditor() の順で呼ぶ）
-
 // キーボード: F2 でその場編集
 document.addEventListener('keydown', e => {
   if (e.key === 'F2' && state.selection && !_editing) {
     openEditor(state.selection.type, state.selection.id);
   }
 });
+
+// ============================================================
+// ステップ10: 保存・読込・仕上げ
+// ============================================================
+
+// --- 保存 (Ctrl+S) ---
+function saveFile() {
+  const json = serialize();
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'block-diagram.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showStatus('💾 保存しました: block-diagram.json');
+}
+
+document.getElementById('btn-save').addEventListener('click', saveFile);
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    saveFile();
+  }
+});
+
+// --- 読込 ---
+const fileInput = document.getElementById('file-input');
+document.getElementById('btn-load').addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  fileInput.value = '';
+
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      deserialize(ev.target.result);
+      render();
+      showStatus(`📂 読込完了: ${file.name}`);
+    } catch {
+      showStatus('❌ 読込失敗: JSONファイルを確認してください', 4000);
+    }
+  };
+  reader.readAsText(file);
+});
+
+// --- クリア ---
+document.getElementById('btn-clear').addEventListener('click', () => {
+  if (!confirm('すべてクリアしますか？')) return;
+  state.blocks.clear();
+  state.arrows.clear();
+  state.nextId    = 1;
+  state.selection = null;
+  state.drag      = null;
+  state.drawing   = null;
+  render();
+  showStatus('🗑 クリアしました');
+});
+
+// ============================================================
+// Ctrl+Z / Ctrl+Y: 簡易アンドゥ・リドゥ
+// ============================================================
+const _history  = [];   // { json, selType, selId }[]
+const _future   = [];
+const MAX_HIST  = 60;
+
+function pushHistory() {
+  _history.push({
+    json   : serialize(),
+    selType: state.selection?.type ?? null,
+    selId  : state.selection?.id   ?? null,
+  });
+  if (_history.length > MAX_HIST) _history.shift();
+  _future.length = 0;
+}
+
+function applySnapshot(snap) {
+  deserialize(snap.json);
+  if (snap.selType && snap.selId != null) {
+    const exists = snap.selType === 'block'
+      ? state.blocks.has(snap.selId)
+      : state.arrows.has(snap.selId);
+    if (exists) setSelection(snap.selType, snap.selId);
+  }
+  render();
+}
+
+// アンドゥ対象の操作後に呼ぶ
+function withHistory(fn) {
+  pushHistory();
+  fn();
+}
+
+// Ctrl+Z
+document.addEventListener('keydown', e => {
+  if (_editing) return;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
+    e.preventDefault();
+    if (_history.length === 0) return;
+    _future.push({
+      json   : serialize(),
+      selType: state.selection?.type ?? null,
+      selId  : state.selection?.id   ?? null,
+    });
+    applySnapshot(_history.pop());
+    showStatus('↩ アンドゥ');
+  }
+  // Ctrl+Y / Ctrl+Shift+Z
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
+    e.preventDefault();
+    if (_future.length === 0) return;
+    _history.push({
+      json   : serialize(),
+      selType: state.selection?.type ?? null,
+      selId  : state.selection?.id   ?? null,
+    });
+    applySnapshot(_future.pop());
+    showStatus('↪ リドゥ');
+  }
+});
+
+// アンドゥ対象の操作に pushHistory() を差し込む
+// mouseup でドラッグ系・矢印確定系の確定時に記録
+const _rawOnDragEnd = onDragEnd;
+function onDragEnd(x, y) {
+  const hadDrag = !!state.drag;
+  if (hadDrag) pushHistory();
+  _rawOnDragEnd(x, y);
+}
+
+const _rawFinishArrow = finishArrow;
+function finishArrow(endSnap, freePt) {
+  pushHistory();
+  _rawFinishArrow(endSnap, freePt);
+}
+
+const _rawDeleteSelected = deleteSelected;
+function deleteSelected() {
+  if (state.selection) pushHistory();
+  _rawDeleteSelected();
+}
+
+// closeEditor（テキスト確定）時も記録
+const _rawCloseEditor = closeEditor;
+function closeEditor(confirm = true) {
+  if (confirm && _editing) pushHistory();
+  _rawCloseEditor(confirm);
+}
+
+// ============================================================
+// ウィンドウリサイズ対応
+// ============================================================
+window.addEventListener('resize', () => {
+  // テキストエディタが開いていたら閉じる
+  if (_editing) closeEditor(true);
+});
+
+// ============================================================
+// 初期サンプル描画（全ステップ完成版）
+// ============================================================
+(function init() {
+  const b1 = createBlock(100, 130, 160, 60, 'フロントエンド');
+  const b2 = createBlock(380, 130, 160, 60, 'バックエンド');
+  const b3 = createBlock(240, 290, 160, 60, 'データベース');
+
+  createArrow(
+    makeSnapEndpoint(b1, 'right',  0.5, 0, 0),
+    makeSnapEndpoint(b2, 'left',   0.5, 0, 0),
+    [], 'API リクエスト'
+  );
+  createArrow(
+    makeSnapEndpoint(b2, 'bottom', 0.5, 0, 0),
+    makeSnapEndpoint(b3, 'right',  0.3, 0, 0),
+    [], 'SQL'
+  );
+
+  render();
+  showStatus(
+    '✅ 完成！  B=ブロック  A=矢印  V=選択  Del=削除  Ctrl+S=保存  Ctrl+Z=アンドゥ  ダブルクリック=テキスト編集',
+    6000
+  );
+})();
 </script>
 </body>
 </html>
