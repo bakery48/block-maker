@@ -1959,28 +1959,58 @@ fileInput.addEventListener('change', () => {
   reader.readAsText(file);
 });
 
-// --- PNG出力 ---
+// --- PNG出力（背景なし・コンテンツのみ） ---
 function exportPNG() {
-  const rect = svgEl.getBoundingClientRect();
-  const W = Math.round(rect.width);
-  const H = Math.round(rect.height);
+  if (state.blocks.size === 0 && state.arrows.size === 0) {
+    showStatus('出力するブロック/矢印がありません');
+    return;
+  }
 
-  // SVGをシリアライズして明示的な width/height を付与
-  const clone = svgEl.cloneNode(true);
-  clone.setAttribute('width',  W);
-  clone.setAttribute('height', H);
-  clone.setAttribute('xmlns',  'http://www.w3.org/2000/svg');
+  const PAD = 20;
 
-  const svgStr  = new XMLSerializer().serializeToString(clone);
+  // ブロック・矢印全体のバウンディングボックスを計算
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of state.blocks.values()) {
+    minX = Math.min(minX, b.x);       minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h);
+  }
+  for (const arrow of state.arrows.values()) {
+    for (const pt of arrowPoints(arrow)) {
+      minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
+      maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
+    }
+  }
+
+  const vx = minX - PAD, vy = minY - PAD;
+  const vw = maxX - minX + PAD * 2;
+  const vh = maxY - minY + PAD * 2;
+
+  // コンテンツレイヤーのみの一時SVGを構築（背景・グリッド・オーバーレイを除外）
+  const tmpSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  tmpSvg.setAttribute('xmlns',   'http://www.w3.org/2000/svg');
+  tmpSvg.setAttribute('width',   vw);
+  tmpSvg.setAttribute('height',  vh);
+  tmpSvg.setAttribute('viewBox', `${vx} ${vy} ${vw} ${vh}`);
+
+  // マーカー定義をコピー（矢印ヘッドに必要）
+  tmpSvg.appendChild(document.getElementById('svg-defs').cloneNode(true));
+
+  // グループ枠・矢印・ブロックのみコピー
+  for (const layerId of ['layer-groups', 'layer-arrows', 'layer-blocks']) {
+    tmpSvg.appendChild(document.getElementById(layerId).cloneNode(true));
+  }
+
+  const svgStr  = new XMLSerializer().serializeToString(tmpSvg);
   const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
   const url     = URL.createObjectURL(svgBlob);
 
   const img = new Image();
   img.onload = () => {
     const canvas = document.createElement('canvas');
-    canvas.width  = W;
-    canvas.height = H;
-    canvas.getContext('2d').drawImage(img, 0, 0, W, H);
+    canvas.width  = vw;
+    canvas.height = vh;
+    // 背景は透明のまま（fillRect しない）
+    canvas.getContext('2d').drawImage(img, 0, 0, vw, vh);
     URL.revokeObjectURL(url);
 
     const a = document.createElement('a');
