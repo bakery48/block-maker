@@ -861,6 +861,62 @@ function findSnap(px, py, excludeId = null) {
   return best;
 }
 
+// --- スマートガイド ---
+const SMART_SNAP_T = 6; // スナップ吸着しきい値 (px)
+
+/**
+ * 移動/リサイズ中ブロックと静止ブロックの辺・中心を比較し、
+ * スナップ補正量とガイドライン情報を返す。
+ * @param movingRects  - 移動中のブロック配列（現在位置）
+ * @param stationaryRects - 静止ブロック配列
+ * @param snapX/snapY - 軸ごとにスナップを有効にするか
+ * returns { snapDx, snapDy, guides: [{axis:'x'|'y', pos}] }
+ */
+function computeSnapGuides(movingRects, stationaryRects, snapX = true, snapY = true) {
+  const guides = [];
+  if (stationaryRects.length === 0) return { snapDx: 0, snapDy: 0, guides };
+  const T = SMART_SNAP_T;
+
+  // 静止ブロックのスナップ候補座標
+  const xCands = [], yCands = [];
+  for (const r of stationaryRects) {
+    xCands.push(r.x, r.x + r.w / 2, r.x + r.w);
+    yCands.push(r.y, r.y + r.h / 2, r.y + r.h);
+  }
+
+  let snapDx = 0, snapDy = 0;
+
+  if (snapX) {
+    // 移動中ブロックのX候補（左・中・右）
+    const mxVals = [];
+    for (const r of movingRects) mxVals.push(r.x, r.x + r.w / 2, r.x + r.w);
+    let bestDist = T, bestGuideX = null;
+    for (const mv of mxVals) {
+      for (const sv of xCands) {
+        const d = sv - mv;
+        if (Math.abs(d) < bestDist) { bestDist = Math.abs(d); snapDx = d; bestGuideX = sv; }
+      }
+    }
+    if (bestGuideX !== null) guides.push({ axis: 'x', pos: bestGuideX });
+  }
+
+  if (snapY) {
+    // 移動中ブロックのY候補（上・中・下）
+    const myVals = [];
+    for (const r of movingRects) myVals.push(r.y, r.y + r.h / 2, r.y + r.h);
+    let bestDist = T, bestGuideY = null;
+    for (const mv of myVals) {
+      for (const sv of yCands) {
+        const d = sv - mv;
+        if (Math.abs(d) < bestDist) { bestDist = Math.abs(d); snapDy = d; bestGuideY = sv; }
+      }
+    }
+    if (bestGuideY !== null) guides.push({ axis: 'y', pos: bestGuideY });
+  }
+
+  return { snapDx, snapDy, guides };
+}
+
 // --- リサイズハンドル ---
 
 /**
@@ -1221,14 +1277,59 @@ function onDragMove(x, y) {
 
   if (d.type === 'move-multi') {
     const dx = x - d.mx, dy = y - d.my;
+    // 仮位置に移動
     for (const {id, ox, oy} of d.blocksOrig) {
       const b = state.blocks.get(id);
       if (b) { b.x = ox + dx; b.y = oy + dy; }
     }
+    // スマートガイドでスナップ補正
+    const movingIds   = new Set(d.blocksOrig.map(o => o.id));
+    const movingRects = d.blocksOrig.map(o => state.blocks.get(o.id)).filter(Boolean);
+    const stationary  = [...state.blocks.values()].filter(b => !movingIds.has(b.id));
+    const { snapDx, snapDy, guides } = computeSnapGuides(movingRects, stationary);
+    for (const b of movingRects) { b.x += snapDx; b.y += snapDy; }
+    state._snapGuides = guides;
     render();
 
   } else if (d.type === 'resize') {
     applyResize(d, x, y);
+    // スマートガイドでリサイズ辺をスナップ
+    const b = state.blocks.get(d.id);
+    if (b) {
+      const stationary = [...state.blocks.values()].filter(bl => bl.id !== d.id);
+      const T = SMART_SNAP_T;
+      const xCands = [], yCands = [];
+      for (const r of stationary) {
+        xCands.push(r.x, r.x + r.w / 2, r.x + r.w);
+        yCands.push(r.y, r.y + r.h / 2, r.y + r.h);
+      }
+      const guides = [];
+      // 右辺スナップ
+      if (d.dir.includes('e')) {
+        for (const sv of xCands) {
+          if (Math.abs(sv - (b.x + b.w)) <= T) { b.w = Math.max(MIN_W, sv - b.x); guides.push({axis:'x', pos:sv}); break; }
+        }
+      }
+      // 左辺スナップ
+      if (d.dir.includes('w')) {
+        for (const sv of xCands) {
+          if (Math.abs(sv - b.x) <= T) { const r = b.x + b.w; b.x = sv; b.w = Math.max(MIN_W, r - sv); guides.push({axis:'x', pos:sv}); break; }
+        }
+      }
+      // 下辺スナップ
+      if (d.dir.includes('s')) {
+        for (const sv of yCands) {
+          if (Math.abs(sv - (b.y + b.h)) <= T) { b.h = Math.max(MIN_H, sv - b.y); guides.push({axis:'y', pos:sv}); break; }
+        }
+      }
+      // 上辺スナップ
+      if (d.dir.includes('n')) {
+        for (const sv of yCands) {
+          if (Math.abs(sv - b.y) <= T) { const bot = b.y + b.h; b.y = sv; b.h = Math.max(MIN_H, bot - sv); guides.push({axis:'y', pos:sv}); break; }
+        }
+      }
+      state._snapGuides = guides;
+    }
     render();
 
   } else if (d.type === 'create') {
@@ -1307,6 +1408,7 @@ function applyResize(d, mx, my) {
 function onDragEnd(x, y) {
   const d = state.drag;
   state.drag = null;
+  state._snapGuides = [];   // ガイドラインを消去
 
   if (!d) return;
 
@@ -1722,6 +1824,22 @@ function finishArrow(endSnap, freePt = null) {
 // renderOverlay 拡張: スナップ表示 + 矢印プレビュー
 // ============================================================
 function renderOverlay() {
+  // --- スマートガイドライン ---
+  if (state._snapGuides && state._snapGuides.length > 0) {
+    const W = svgEl.clientWidth, H = svgEl.clientHeight;
+    for (const g of state._snapGuides) {
+      mkEl('line', g.axis === 'x'
+        ? { x1: g.pos, y1: 0,   x2: g.pos, y2: H }
+        : { x1: 0,    y1: g.pos, x2: W,    y2: g.pos },
+        Object.assign({}, {
+          stroke: '#f6ad55', 'stroke-width': 1,
+          'stroke-dasharray': '5 3', opacity: '0.9',
+          'pointer-events': 'none',
+        }),
+      layerOverlay);
+    }
+  }
+
   // --- ブロック作成プレビュー ---
   const d = state.drag;
   if (d?.type === 'create') {
